@@ -134,4 +134,79 @@
       setLoading(false);
     }
   });
+
+  /* ---------- Forgot password ---------- */
+
+  var forgotPasswordBtn = document.getElementById("forgotPasswordBtn");
+  var forgotPasswordOverlay = document.getElementById("forgotPasswordOverlay");
+  var forgotPasswordCloseBtn = document.getElementById("forgotPasswordCloseBtn");
+  var forgotEmailInput = document.getElementById("forgotEmail");
+  var forgotEmailGroup = document.getElementById("forgotEmailGroup");
+  var forgotFormAlert = document.getElementById("forgotFormAlert");
+  var sendResetLinkBtn = document.getElementById("sendResetLinkBtn");
+
+  function closeForgotPasswordModal() {
+    forgotPasswordOverlay.classList.remove("show");
+  }
+
+  forgotPasswordBtn.addEventListener("click", function () {
+    forgotEmailInput.value = document.getElementById("email").value.trim();
+    forgotEmailGroup.classList.remove("has-error");
+    forgotFormAlert.style.display = "none";
+    sendResetLinkBtn.disabled = false;
+    sendResetLinkBtn.textContent = "Send reset link";
+    forgotPasswordOverlay.classList.add("show");
+    setTimeout(function () {
+      forgotEmailInput.focus();
+    }, 50);
+  });
+
+  forgotPasswordCloseBtn.addEventListener("click", closeForgotPasswordModal);
+
+  forgotPasswordOverlay.addEventListener("click", function (e) {
+    if (e.target === forgotPasswordOverlay) closeForgotPasswordModal();
+  });
+
+  sendResetLinkBtn.addEventListener("click", async function () {
+    var email = forgotEmailInput.value.trim();
+    forgotEmailGroup.classList.remove("has-error");
+    forgotFormAlert.style.display = "none";
+
+    if (!email) {
+      forgotEmailGroup.classList.add("has-error");
+      var errEl = forgotEmailGroup.querySelector(".field-error");
+      if (errEl) errEl.textContent = "Email is required.";
+      return;
+    }
+
+    sendResetLinkBtn.disabled = true;
+    sendResetLinkBtn.textContent = "Sending…";
+
+    try {
+      var result = await sb.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin + "/reset-password"
+      });
+
+      if (result.error) {
+        forgotFormAlert.className = "alert alert-error";
+        forgotFormAlert.style.display = "flex";
+        forgotFormAlert.textContent = result.error.message || "Couldn't send the reset link. Please try again.";
+        sendResetLinkBtn.disabled = false;
+        sendResetLinkBtn.textContent = "Send reset link";
+        return;
+      }
+
+      forgotFormAlert.className = "alert alert-success";
+      forgotFormAlert.style.display = "flex";
+      forgotFormAlert.textContent =
+        "If an account exists for " + email + ", a reset link is on its way — check your inbox (and spam folder).";
+      sendResetLinkBtn.textContent = "Link sent";
+    } catch (err) {
+      forgotFormAlert.className = "alert alert-error";
+      forgotFormAlert.style.display = "flex";
+      forgotFormAlert.textContent = "Something went wrong. Please try again in a moment.";
+      sendResetLinkBtn.disabled = false;
+      sendResetLinkBtn.textContent = "Send reset link";
+    }
+  });
 })();

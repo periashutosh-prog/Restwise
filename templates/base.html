@@ -1,6 +1,17 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <script>
+    // Safety net: if Supabase's password-recovery redirect lands here instead of
+    // /reset-password (e.g. because the exact redirect URL isn't in the Supabase
+    // allow-list yet, so it fell back to the Site URL), forward immediately while
+    // preserving the token fragment so /reset-password's own client can consume it.
+    (function () {
+      if (window.location.pathname !== "/reset-password" && window.location.hash.indexOf("type=recovery") !== -1) {
+        window.location.replace("/reset-password" + window.location.hash);
+      }
+    })();
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Restwise — A smartwatch that protects your sleep{% endblock %}</title>

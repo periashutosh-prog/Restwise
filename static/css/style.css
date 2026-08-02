@@ -1250,6 +1250,31 @@ body:has(.app-sidebar) .app-footer {
   margin-bottom: 7px;
 }
 
+.form-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.form-label-row label {
+  margin-bottom: 0;
+}
+
+.forgot-password-link {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent-dark);
+  padding: 0;
+}
+
+.forgot-password-link:hover {
+  text-decoration: underline;
+}
+
 .form-group .field-hint {
   display: block;
   font-size: 0.78rem;
