@@ -1,0 +1,137 @@
+(function () {
+  "use strict";
+
+  var form = document.getElementById("loginForm");
+  var submitBtn = document.getElementById("loginSubmit");
+  var formAlert = document.getElementById("formAlert");
+
+  function clearFieldErrors() {
+    form.querySelectorAll(".form-group.has-error").forEach(function (g) {
+      g.classList.remove("has-error");
+    });
+  }
+
+  function setFieldError(id, message) {
+    var input = document.getElementById(id);
+    var group = input.closest(".form-group");
+    group.classList.add("has-error");
+    var errEl = group.querySelector(".field-error");
+    if (errEl) errEl.textContent = message;
+  }
+
+  function hideFormAlert() {
+    formAlert.style.display = "none";
+  }
+
+  function setLoading(isLoading) {
+    submitBtn.classList.toggle("is-loading", isLoading);
+    submitBtn.disabled = isLoading;
+    submitBtn.textContent = isLoading ? "Logging in…" : "Log In";
+  }
+
+  function hasExistingTimetable(userId) {
+    try {
+      var raw = window.localStorage.getItem("restwise_planner_" + userId);
+      if (!raw) return false;
+      var saved = JSON.parse(raw);
+      var source = saved.timetable && saved.timetable.source;
+      return Array.isArray(source) && source.length > 0;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async function applyPendingProfile(email, userId) {
+    var key = "restwise_pending_profile_" + email.toLowerCase();
+    var raw = window.localStorage.getItem(key);
+    if (!raw) return;
+
+    try {
+      var profilePayload = JSON.parse(raw);
+      var existing = await sb.from("profiles").select("id").eq("id", userId).maybeSingle();
+
+      if (!existing.data) {
+        await sb.from("profiles").insert(Object.assign({ id: userId }, profilePayload));
+      }
+    } catch (err) {
+      // Non-fatal — the user is still logged in either way.
+    } finally {
+      window.localStorage.removeItem(key);
+    }
+  }
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    clearFieldErrors();
+    hideFormAlert();
+
+    var email = document.getElementById("email").value.trim();
+    var password = document.getElementById("password").value;
+
+    if (!email || !password) {
+      if (!email) setFieldError("email", "Email is required.");
+      if (!password) setFieldError("password", "Password is required.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      // Distinguish "no account with this email" from "wrong password" up front.
+      var existsCheck = await sb.rpc("email_exists", { check_email: email });
+
+      if (!existsCheck.error && existsCheck.data === false) {
+        showAuthModal({
+          type: "error",
+          title: "Email is not found",
+          message: "We couldn't find a Restwise account for <strong>" + email + "</strong>. Double-check the address, or sign up first."
+        });
+        setLoading(false);
+        return;
+      }
+
+      var signInResult = await sb.auth.signInWithPassword({ email: email, password: password });
+
+      if (signInResult.error) {
+        var msg = (signInResult.error.message || "").toLowerCase();
+
+        if (msg.indexOf("email not confirmed") !== -1) {
+          showAuthModal({
+            type: "warning",
+            title: "Email not confirmed yet",
+            message:
+              "You need to confirm your email address before logging in. We sent a confirmation link to <strong>" +
+              email +
+              "</strong> — please check your inbox, and if you don't see it, look in your <strong>spam or junk folder</strong>."
+          });
+        } else if (msg.indexOf("invalid login credentials") !== -1) {
+          showAuthModal({
+            type: "error",
+            title: "Incorrect password",
+            message: "That password doesn't match the account for <strong>" + email + "</strong>. Please try again."
+          });
+        } else {
+          showAuthModal({
+            type: "error",
+            title: "Couldn't log you in",
+            message: signInResult.error.message || "Something went wrong. Please try again."
+          });
+        }
+
+        setLoading(false);
+        return;
+      }
+
+      await applyPendingProfile(email, signInResult.data.user.id);
+
+      window.location.href = hasExistingTimetable(signInResult.data.user.id) ? "/home" : "/dashboard";
+    } catch (err) {
+      showAuthModal({
+        type: "error",
+        title: "Couldn't log you in",
+        message: "Something went wrong on our end. Please try again in a moment."
+      });
+      setLoading(false);
+    }
+  });
+})();

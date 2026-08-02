@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <main id="top">
+
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="container hero-inner">
+        <div class="hero-copy">
+          <span class="eyebrow"><span class="dot"></span> Built for the National Children's Science Congress</span>
+          <h1>A smartwatch that protects your <span class="accent">sleep</span>, not your screen time.</h1>
+          <p class="hero-sub">
+            Restwise pairs a radio-free ESP32 smartwatch with a companion website to build
+            sleep-safe, break-aware routines for students juggling school, tuition, and homework —
+            then makes sure the routine actually happens.
+          </p>
+
+          <div class="hero-taglines">
+            <span class="tagline-chip">Structured routines. Real rest.</span>
+            <span class="tagline-chip">Zero radiation.</span>
+            <span class="tagline-chip">Knows when you need a break.</span>
+          </div>
+
+          <div class="hero-ctas">
+            <a href="/signup" class="btn btn-primary btn-lg">Set Your Schedule</a>
+            <a href="#how-it-works" class="btn btn-ghost btn-lg">See how it works</a>
+          </div>
+
+          <div class="hero-stats">
+            <div>
+              <div class="stat-num" data-count="200" data-suffix="+">0</div>
+              <div class="stat-label">students surveyed</div>
+            </div>
+            <div>
+              <div class="stat-num">₹1000</div>
+              <div class="stat-label">approx. hardware cost</div>
+            </div>
+            <div>
+              <div class="stat-num">0</div>
+              <div class="stat-label">radios on board</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-visual">
+          <div class="watch-mock">
+            <span class="watch-nowave">NO RADIO</span>
+            <div class="watch-strap-top"></div>
+            <div class="watch-body">
+              <div class="watch-screen">
+                <span class="watch-period" id="watchPeriod">Period 4 · Chemistry</span>
+                <span class="watch-time" id="watchTime">10:24</span>
+                <span class="watch-next">Break in 6 min · Breathing reminder queued</span>
+              </div>
+            </div>
+            <div class="watch-strap-bottom"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROBLEM -->
+    <section id="problem" class="problem">
+      <div class="container">
+        <div class="section-head reveal">
+          <div class="section-eyebrow">The Problem</div>
+          <h2>Over-scheduled days are quietly costing students their sleep</h2>
+        </div>
+
+        <div class="problem-grid">
+          <div class="problem-text reveal">
+            <p>
+              Students juggling school, tuition, and homework routinely lose sleep and accumulate
+              stress from over-scheduled, poorly-paced days. Most "smart" devices make this worse —
+              adding more screens and notifications instead of solving the actual problem.
+            </p>
+            <p>
+              They also expose kids to constant radio-frequency emissions from BLE and WiFi radios
+              that run all day, every day, on a wrist that never comes off.
+            </p>
+            <div class="problem-callout">
+              <strong>Coming soon:</strong> real numbers from our ongoing survey of 200+ students —
+              e.g. what share report under 7 hours of sleep on a school night.
+            </div>
+          </div>
+
+          <div class="problem-cards reveal">
+            <div class="problem-card">
+              <span class="icon-badge">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+              </span>
+              <div>
+                <h4>Back-to-back schedules</h4>
+                <p>School, tuition, and homework stack up with no built-in breathing room.</p>
+              </div>
+            </div>
+            <div class="problem-card">
+              <span class="icon-badge">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 18h16M6 18V9M12 18V5M18 18v11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
+              <div>
+                <h4>Sleep is the first casualty</h4>
+                <p>When the day runs long, bedtime is what gets cut — night after night.</p>
+              </div>
+            </div>
+            <div class="problem-card">
+              <span class="icon-badge">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2C7 7 5 10.5 5 14a7 7 0 0014 0c0-3.5-2-7-7-12z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+              </span>
+              <div>
+                <h4>More screens, not less</h4>
+                <p>Typical "smart" devices add notifications instead of protecting focus and rest.</p>
+              </div>
+            </div>
+            <div class="problem-card">
+              <span class="icon-badge">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1118 0 9 9 0 01-18 0z" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 12h7M12 8.5v7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              </span>
+              <div>
+                <h4>All-day radio exposure</h4>
+                <p>BLE and WiFi radios run constantly on a device worn on a child's wrist all day.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SOLUTION -->
+    <section id="solution">
+      <div class="container">
+        <div class="section-head center reveal">
+          <div class="section-eyebrow">The Solution</div>
+          <h2>One system, two parts — built to protect rest by design</h2>
+          <p>
+            A radio-free ESP32-based smartwatch and a companion website that build a sleep-safe
+            daily schedule, enforce healthy breaks, and give a weekly view of how well the routine
+            is actually being followed.
+          </p>
+        </div>
+
+        <div class="principles-grid reveal">
+          <div class="principle-card">
+            <div class="principle-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8"/></svg>
+            </div>
+            <h3>Zero radio waves</h3>
+            <p>No WiFi, no Bluetooth, no cellular. All syncing happens over a wired USB connection — built to reduce all-day EMF exposure for children.</p>
+          </div>
+          <div class="principle-card">
+            <div class="principle-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="5" y="3" width="14" height="18" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M9 7h6M9 11h6M9 15h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </div>
+            <h3>Distraction-free by design</h3>
+            <p>School mode locks the calculator and other non-essential apps during class hours — leaving only what a student actually needs.</p>
+          </div>
+          <div class="principle-card">
+            <div class="principle-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 21c4-3 8-6.5 8-11a5 5 0 00-8-4 5 5 0 00-8 4c0 4.5 4 8 8 11z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            </div>
+            <h3>Low-cost, repairable hardware</h3>
+            <p>Built on an approachable ~₹1000 bill of materials — not a sealed, disposable gadget.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section id="features" class="features">
+      <div class="container">
+        <div class="section-head center reveal">
+          <div class="section-eyebrow">Features</div>
+          <h2>Everything the routine needs, split across watch and web</h2>
+          <p>The watch guides the day in real time. The website plans it, checks it, and reports on it.</p>
+        </div>
+
+        <div class="features-tabs reveal">
+          <button class="tab-btn active" data-tab="watch">Watch Features</button>
+          <button class="tab-btn" data-tab="web">Website Features</button>
+        </div>
+
+        <div class="tab-panel active" id="tab-watch">
+          <div class="feature-grid reveal">
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="7" y="4" width="10" height="16" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M10 8h4M10 12h4M10 16h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+              <h4>Live timetable display</h4>
+              <p>Shows the current period and what's coming next, pulled straight from the schedule set on the website.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="13" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 4v4M16 4v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+              <h4>Auto school mode</h4>
+              <p>The calculator and other non-essential apps lock automatically during school hours.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M5 12h4l2-6 4 12 2-6h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <h4>Enforced breaks</h4>
+              <p>After a continuous study stretch, the watch prompts a mandatory break the student must acknowledge before continuing.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.8"/></svg></span>
+              <h4>Guided breathing mode</h4>
+              <p>A simple animated breathing exercise for quick stress resets, especially useful before exams.</p>
+              <div class="breathing-demo" aria-hidden="true"><div class="breathing-circle"></div></div>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M20.8 4.4A8.5 8.5 0 1112 21a8.5 8.5 0 008.8-16.6z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span>
+              <h4>Wind-down mode</h4>
+              <p>30–45 minutes before bedtime, the watch shifts to a calm, low-stimulation screen and locks distracting apps.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 21s-7-4.5-7-10a4.5 4.5 0 018-3 4.5 4.5 0 018 3c0 5.5-7 10-7 10z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span>
+              <h4>Stress-log button</h4>
+              <p>A quick way to log a stressful moment, building a private record over time.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 19V6a2 2 0 012-2h9l5 5v10a2 2 0 01-2 2H6a2 2 0 01-2-2z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 13l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <h4>On-device compliance logging</h4>
+              <p>Tracks breaks taken, breathing sessions completed, and wind-down adherence — stored locally until synced.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-web">
+          <div class="feature-grid reveal">
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M4 9h16M9 9v11" stroke="currentColor" stroke-width="1.8"/></svg></span>
+              <h4>Schedule builder</h4>
+              <p>Parents and students enter school, tuition, and home time blocks in a few clicks.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 21s-7-4.5-7-10a4.5 4.5 0 018-3 4.5 4.5 0 018 3c0 5.5-7 10-7 10z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 11h6M9 14h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+              <h4>Sleep-window calculator</h4>
+              <p>Automatically flags if the entered schedule doesn't leave enough sleep time for the student's age group.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M5 12h4l2-6 4 12 2-6h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <h4>Smart break insertion</h4>
+              <p>Automatically adds breaks between long study sessions instead of letting them run back-to-back.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 19V5M4 19h16M8 15v3M12 10v8M16 6v12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+              <h4>Weekly compliance dashboard</h4>
+              <p>Shows break adherence, sleep-window adherence, and stress-log patterns over time.</p>
+            </div>
+            <div class="feature-card">
+              <span class="icon-badge"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2l2.4 6.6L21 10l-5 4.3L17.5 21 12 17.3 6.5 21 8 14.3 3 10l6.6-1.4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+              <h4>AI-assisted revision planner</h4>
+              <p>Generates a prioritized study plan before exams based on subject and weak topics — with one hard rule: it never suggests cutting into sleep.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section id="how-it-works">
+      <div class="container">
+        <div class="section-head center reveal">
+          <div class="section-eyebrow">How It Works</div>
+          <h2>Plan it once. Live it every day.</h2>
+        </div>
+
+        <div class="steps reveal">
+          <div class="step-card">
+            <div class="step-num">1</div>
+            <h3>Plan</h3>
+            <p>Enter your routine on the website. It builds a sleep-safe, break-aware schedule automatically.</p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">2</div>
+            <h3>Sync</h3>
+            <p>Connect the watch via USB. The schedule and settings transfer over — no wireless needed, ever.</p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">3</div>
+            <h3>Live it</h3>
+            <p>The watch guides the day, enforces breaks and wind-down, and logs compliance — synced back next time you plug in.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VALIDATION -->
+    <section id="validation" class="validation">
+      <div class="container">
+        <div class="validation-inner">
+          <div class="validation-stat reveal">
+            <div class="big-num"><span data-count="200">0</span>+</div>
+            <div class="big-label">students surveyed on routine, sleep &amp; stress</div>
+            <div class="validation-bar"><div class="validation-bar-fill" id="validationBar"></div></div>
+          </div>
+
+          <div class="validation-text reveal">
+            <div class="section-eyebrow">Validation</div>
+            <h2>Sized before it was designed</h2>
+            <p>
+              Backed by a physical survey of 200+ students on current routine, sleep, and stress
+              patterns — used to size the actual problem before designing the solution, not after.
+            </p>
+            <ul class="validation-list">
+              <li><span class="check-icon">✓</span> Current daily schedule &amp; time-block breakdown</li>
+              <li><span class="check-icon">✓</span> Self-reported sleep duration on school nights</li>
+              <li><span class="check-icon">✓</span> Frequency and triggers of exam-related stress</li>
+              <li><span class="check-icon">✓</span> Existing break and wind-down habits, if any</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FINAL CTA -->
+    <section class="final-cta">
+      <div class="container">
+        <div class="final-cta-box reveal">
+          <h2>Structured routines. Real rest. Zero radiation.</h2>
+          <p>Restwise is currently in development for the National Children's Science Congress.</p>
+          <div class="hero-ctas">
+            <a href="/signup" class="btn btn-primary">Set Your Schedule</a>
+            <a href="/login" class="btn btn-ghost">Log In</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+{% endblock %}
