@@ -67,6 +67,71 @@ a {
   box-shadow: 0 2px 16px rgba(31, 61, 55, 0.06);
 }
 
+/* App pages (dashboard, home): fit within the viewport, no page-level scroll.
+   Individual panels may still scroll internally if their own content overflows.
+   Desktop only — on narrow screens the two-panel grid stacks, so normal page
+   scrolling is kept (forcing a fixed height there would clip content). */
+
+@media (min-width: 901px) {
+  body.app-no-scroll {
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  body.app-no-scroll .nav,
+  body.app-no-scroll .app-footer {
+    flex-shrink: 0;
+  }
+
+  body.app-no-scroll .dashboard-main,
+  body.app-no-scroll .app-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  body.app-no-scroll .dashboard-main {
+    display: flex;
+    flex-direction: column;
+    padding-top: 24px;
+    padding-bottom: 24px;
+  }
+
+  body.app-no-scroll .dashboard-main > .container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+
+  body.app-no-scroll .dashboard-grid {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  body.app-no-scroll .chat-panel,
+  body.app-no-scroll .timetable-panel {
+    height: 100%;
+    min-height: 0;
+  }
+
+  body.app-no-scroll .timetable-panel {
+    overflow-y: auto;
+  }
+
+  body.app-no-scroll .app-shell {
+    height: 100%;
+  }
+
+  body.app-no-scroll .app-main {
+    height: 100%;
+    overflow-y: auto;
+  }
+}
+
 .nav-inner {
   display: flex;
   align-items: center;
@@ -995,6 +1060,37 @@ footer {
 .footer-note {
   color: var(--text-muted);
   font-size: 0.86rem;
+}
+
+.footer-copyright {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.app-footer {
+  border-top: 1px solid var(--border);
+  padding: 20px 28px;
+  text-align: center;
+}
+
+.app-footer .footer-copyright {
+  margin: 0;
+  padding: 0;
+  border-top: none;
+}
+
+body:has(.app-sidebar) .app-footer {
+  margin-left: var(--app-sidebar-compact);
+}
+
+@media (max-width: 900px) {
+  body:has(.app-sidebar) .app-footer {
+    margin-left: 0;
+  }
 }
 
 /* ---------- Responsive ---------- */
