@@ -304,6 +304,7 @@
               <li><span class="check-icon">✓</span> Frequency and triggers of exam-related stress</li>
               <li><span class="check-icon">✓</span> Existing break and wind-down habits, if any</li>
             </ul>
+            <button type="button" class="btn btn-primary" id="openSurveyBtn">Take Our Survey</button>
           </div>
         </div>
       </div>
@@ -324,4 +325,173 @@
     </section>
 
   </main>
+
+  <!-- Survey modal -->
+  <div class="modal-overlay" id="surveyModalOverlay">
+    <div class="modal-box modal-box-wide" role="dialog" aria-modal="true">
+
+      <!-- Step: choice -->
+      <div id="surveyStepChoice">
+        <h3>Restwise Student Survey</h3>
+        <p class="intake-sub">Help us size the problem we're solving — takes about 2 minutes.</p>
+        <div class="survey-choice-row">
+          <button type="button" class="survey-choice-btn" id="surveyViewChoiceBtn">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/></svg>
+            <span>View Survey</span>
+            <span class="survey-choice-sub">Just look at the questions</span>
+          </button>
+          <button type="button" class="survey-choice-btn" id="surveyTakeChoiceBtn">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M4 19V6a2 2 0 012-2h9l5 5v10a2 2 0 01-2 2H6a2 2 0 01-2-2z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 13l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Take Part in Survey</span>
+            <span class="survey-choice-sub">Answer and submit</span>
+          </button>
+        </div>
+        <button type="button" class="btn btn-ghost btn-block" id="surveyCloseBtn1" style="margin-top:14px;">Close</button>
+      </div>
+
+      <!-- Step: view (read-only) -->
+      <div id="surveyStepView" style="display:none;">
+        <h3>Survey questions</h3>
+        <ol class="survey-view-list">
+          <li>How many hours of sleep do you usually get on a school night? <span>&lt; 5 hrs / 6–8 hrs / &gt; 8 hrs</span></li>
+          <li>How often do you feel stressed because of school, tuition, or exams? <span>Never / Sometimes / Almost every day</span></li>
+          <li>Do you get a proper break between school, tuition, and homework? <span>Always / Sometimes / Never</span></li>
+          <li>How would you describe your energy level during the day? <span>Very low / Low / Average / High</span></li>
+          <li>What time do you usually go to sleep?</li>
+          <li>What time do you usually wake up?</li>
+          <li>How many days a week do you go to tuition/coaching?</li>
+          <li>Which tuition or coaching classes do you attend?</li>
+        </ol>
+        <div class="modal-actions-row">
+          <button type="button" class="btn btn-ghost" id="surveyViewBackBtn">Back</button>
+          <button type="button" class="btn btn-primary" id="surveyViewTakeBtn">Take Part Now</button>
+        </div>
+      </div>
+
+      <!-- Step: form -->
+      <div id="surveyStepForm" style="display:none;">
+        <h3>Take part in the survey</h3>
+        <div class="alert" id="surveyFormAlert" style="display:none;"></div>
+
+        <form id="surveyForm" novalidate>
+          <label class="survey-anon-toggle">
+            <input type="checkbox" id="surveyAnonymous" />
+            <span>Submit anonymously (hides name &amp; school)</span>
+          </label>
+
+          <div class="form-row">
+            <div class="form-group" id="surveyNameGroup">
+              <label for="surveyName">Name</label>
+              <input class="form-control" type="text" id="surveyName" maxlength="30" />
+              <span class="field-error"></span>
+            </div>
+            <div class="form-group">
+              <label for="surveyClass">Class</label>
+              <select class="form-control" id="surveyClass">
+                <option value="" disabled selected>Select class</option>
+                <option>Class 1</option>
+                <option>Class 2</option>
+                <option>Class 3</option>
+                <option>Class 4</option>
+                <option>Class 5</option>
+                <option>Class 6</option>
+                <option>Class 7</option>
+                <option>Class 8</option>
+                <option>Class 9</option>
+                <option>Class 10</option>
+                <option>Class 11</option>
+                <option>Class 12</option>
+              </select>
+              <span class="field-error"></span>
+            </div>
+          </div>
+
+          <div class="form-group" id="surveySchoolGroup">
+            <label for="surveySchool">School</label>
+            <input class="form-control" type="text" id="surveySchool" maxlength="28" />
+            <span class="field-error"></span>
+          </div>
+
+          <div class="survey-question-block">
+            <div class="survey-question-label">Q1. How many hours of sleep do you usually get on a school night?</div>
+            <div class="survey-options">
+              <label class="survey-option"><input type="radio" name="q1" value="a" /> &lt; 5 Hours</label>
+              <label class="survey-option"><input type="radio" name="q1" value="b" /> 6-8 Hours</label>
+              <label class="survey-option"><input type="radio" name="q1" value="c" /> &gt;8 Hours</label>
+            </div>
+            <span class="field-error"></span>
+          </div>
+
+          <div class="survey-question-block">
+            <div class="survey-question-label">Q2. How often do you feel stressed because of school, tuition, or exams?</div>
+            <div class="survey-options">
+              <label class="survey-option"><input type="radio" name="q2" value="a" /> Never</label>
+              <label class="survey-option"><input type="radio" name="q2" value="b" /> Sometimes</label>
+              <label class="survey-option"><input type="radio" name="q2" value="c" /> Almost every day</label>
+            </div>
+            <span class="field-error"></span>
+          </div>
+
+          <div class="survey-question-block">
+            <div class="survey-question-label">Q3. Do you get a proper break between school, tuition, and homework?</div>
+            <div class="survey-options">
+              <label class="survey-option"><input type="radio" name="q3" value="a" /> Always</label>
+              <label class="survey-option"><input type="radio" name="q3" value="b" /> Sometimes</label>
+              <label class="survey-option"><input type="radio" name="q3" value="c" /> Never</label>
+            </div>
+            <span class="field-error"></span>
+          </div>
+
+          <div class="survey-question-block">
+            <div class="survey-question-label">Q4. How would you describe your energy level during the day?</div>
+            <div class="survey-options">
+              <label class="survey-option"><input type="radio" name="q4" value="a" /> Very low</label>
+              <label class="survey-option"><input type="radio" name="q4" value="b" /> Low</label>
+              <label class="survey-option"><input type="radio" name="q4" value="c" /> Average</label>
+              <label class="survey-option"><input type="radio" name="q4" value="d" /> High</label>
+            </div>
+            <span class="field-error"></span>
+          </div>
+
+          <div class="form-group">
+            <label for="surveyQ5">Q5. What time do you usually go to sleep?</label>
+            <input class="form-control" type="text" id="surveyQ5" maxlength="30" placeholder="e.g. 11:30 PM" />
+          </div>
+          <div class="form-group">
+            <label for="surveyQ6">Q6. What time do you usually wake up?</label>
+            <input class="form-control" type="text" id="surveyQ6" maxlength="30" placeholder="e.g. 6:00 AM" />
+          </div>
+          <div class="form-group">
+            <label for="surveyQ7">Q7. How many days a week do you go to tuition/coaching?</label>
+            <input class="form-control" type="text" id="surveyQ7" maxlength="20" placeholder="e.g. 4" />
+          </div>
+          <div class="form-group">
+            <label for="surveyQ8">Q8. Which tuition or coaching classes do you attend?</label>
+            <input class="form-control" type="text" id="surveyQ8" maxlength="40" placeholder="e.g. Coaching Name" />
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-lg btn-block" id="surveySubmitBtn">Submit Survey</button>
+        </form>
+        <button type="button" class="btn btn-ghost btn-block" id="surveyFormBackBtn" style="margin-top:10px;">Back</button>
+      </div>
+
+      <!-- Step: success -->
+      <div id="surveyStepSuccess" style="display:none;">
+        <div class="modal-icon modal-icon-success">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 19V6a2 2 0 012-2h9l5 5v10a2 2 0 01-2 2H6a2 2 0 01-2-2z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 13l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h3 style="text-align:center;">Thank you!</h3>
+        <p style="text-align:center;">Your response has been recorded — it'll help us prove exactly how much this problem needs solving.</p>
+        <button type="button" class="btn btn-primary btn-block" id="surveyDoneBtn">Close</button>
+      </div>
+
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="{{ url_for('static', filename='js/supabase-client.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/nav-auth.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/survey.js') }}"></script>
 {% endblock %}

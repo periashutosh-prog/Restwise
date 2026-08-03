@@ -29,7 +29,7 @@
     submitBtn.textContent = isLoading ? "Logging in…" : "Log In";
   }
 
-  function hasExistingTimetable(userId) {
+  function hasLocalTimetable(userId) {
     try {
       var raw = window.localStorage.getItem("restwise_planner_" + userId);
       if (!raw) return false;
@@ -39,6 +39,20 @@
     } catch (err) {
       return false;
     }
+  }
+
+  // The server-side timetables table is the real source of truth (works across
+  // devices/browsers) — localStorage is only a fallback if that lookup fails.
+  async function hasExistingTimetable(userId) {
+    try {
+      var result = await sb.from("timetables").select("blocks").eq("id", userId).maybeSingle();
+      if (!result.error) {
+        return !!(result.data && Array.isArray(result.data.blocks) && result.data.blocks.length > 0);
+      }
+    } catch (err) {
+      /* fall through to localStorage */
+    }
+    return hasLocalTimetable(userId);
   }
 
   async function applyPendingProfile(email, userId) {
@@ -124,7 +138,8 @@
 
       await applyPendingProfile(email, signInResult.data.user.id);
 
-      window.location.href = hasExistingTimetable(signInResult.data.user.id) ? "/home" : "/dashboard";
+      var goesHome = await hasExistingTimetable(signInResult.data.user.id);
+      window.location.href = goesHome ? "/home" : "/dashboard";
     } catch (err) {
       showAuthModal({
         type: "error",

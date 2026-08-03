@@ -1,6 +1,28 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <script>
+    // Auth guard: runs before anything paints, so a signed-out visitor forcing a
+    // direct link to /home or /dashboard never sees a flash of the app shell —
+    // supabase-js persists the session under this localStorage key.
+    (function () {
+      var raw = null;
+      try {
+        raw = window.localStorage.getItem("sb-lbgtdhzwcqztxocygbgw-auth-token");
+      } catch (err) {}
+
+      var hasSession = false;
+      if (raw) {
+        try {
+          hasSession = !!JSON.parse(raw).access_token;
+        } catch (err) {}
+      }
+
+      if (!hasSession) {
+        window.location.replace("/login");
+      }
+    })();
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Dashboard — Restwise{% endblock %}</title>

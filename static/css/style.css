@@ -975,6 +975,10 @@ section {
   color: var(--text);
 }
 
+#openSurveyBtn {
+  margin-top: 28px;
+}
+
 .check-icon {
   color: var(--accent-dark);
   flex-shrink: 0;
@@ -1308,6 +1312,18 @@ body:has(.app-sidebar) .app-footer {
   cursor: not-allowed;
 }
 
+input[type="file"].form-control {
+  border: none;
+  background: transparent;
+  padding: 8px 0;
+}
+
+input[type="file"].form-control:focus {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
 select.form-control {
   cursor: pointer;
   appearance: none;
@@ -1428,6 +1444,9 @@ select.form-control {
   box-shadow: var(--shadow-lg);
   max-width: 420px;
   width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 32px 30px 26px;
   transform: translateY(16px) scale(0.98);
   transition: transform 0.22s ease;
@@ -1436,6 +1455,16 @@ select.form-control {
 
 .modal-overlay.show .modal-box {
   transform: translateY(0) scale(1);
+}
+
+.modal-actions-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.modal-actions-row .btn {
+  flex: 1;
 }
 
 .modal-icon {
@@ -1456,6 +1485,18 @@ select.form-control {
 .modal-icon.modal-icon-warning {
   background: #fdf3d9;
   color: #b8860b;
+}
+
+.modal-icon.modal-icon-success {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 18px;
 }
 
 .modal-box h3 {
@@ -2299,6 +2340,153 @@ select.form-control {
   line-height: 1.5;
 }
 
+/* ---------- Survey modal ---------- */
+
+.survey-choice-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+
+.survey-choice-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 26px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.survey-choice-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: translateY(-2px);
+}
+
+.survey-choice-btn svg {
+  color: var(--accent-dark);
+  margin-bottom: 4px;
+}
+
+.survey-choice-btn span:nth-child(2) {
+  font-weight: 700;
+  font-size: 0.98rem;
+}
+
+.survey-choice-sub {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.survey-view-list {
+  text-align: left;
+  margin: 0 0 22px;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--text);
+  font-size: 0.92rem;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.survey-view-list li span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  margin-top: 2px;
+}
+
+.survey-anon-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-alt);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.export-option-list {
+  text-align: left;
+  margin-bottom: 4px;
+}
+
+.export-option-list .survey-anon-toggle {
+  margin-bottom: 10px;
+}
+
+.survey-anon-toggle input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.survey-question-block {
+  text-align: left;
+  margin-bottom: 20px;
+}
+
+.survey-question-label {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.survey-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.survey-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 14px;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.survey-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.survey-option input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+@media (max-width: 560px) {
+  .survey-choice-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---------- Manage Smartwatch ---------- */
 
 .sw-status-grid {
@@ -2336,6 +2524,89 @@ select.form-control {
 .sw-actions {
   display: flex;
   gap: 12px;
+}
+
+.survey-manage-list {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.survey-manage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.survey-manage-row:last-child {
+  border-bottom: none;
+}
+
+.survey-manage-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.survey-manage-type {
+  display: inline-block;
+  align-self: flex-start;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent-dark);
+  background: rgba(47, 158, 142, 0.12);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.survey-manage-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.survey-manage-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.survey-manage-delete {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--coral);
+  color: var(--coral);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.survey-manage-delete:hover {
+  background: var(--coral);
+  color: #fff;
+}
+
+.admin-promote-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-promote-row .form-control {
+  flex: 1;
+  min-width: 220px;
 }
 
 .port-list {

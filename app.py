@@ -1,10 +1,15 @@
+import io
 import json
 import os
 import time
+import uuid
 
+import fitz  # PyMuPDF
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
+
+import survey_pdf
 
 load_dotenv()
 
@@ -13,6 +18,15 @@ app = Flask(__name__)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Same public anon key already embedded client-side in static/js/supabase-client.js —
+# safe to reuse server-side, access is enforced entirely by RLS policies, not secrecy.
+SUPABASE_URL = "https://lbgtdhzwcqztxocygbgw.supabase.co"
+SUPABASE_ANON_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxiZ3RkaHp3Y3F6dHhvY3lnYmd3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1ODA2OTgsImV4cCI6MjEwMTE1NjY5OH0.xtAcFzuJh8HAp9OTrLl2eFzOWgmHgueVO2974GhU1a0"
+)
+
+SURVEY_OPTION_LETTERS = {"a", "b", "c", "d"}
 
 COLLECTED_KEYS = [
     "wake_time",
@@ -324,6 +338,494 @@ def api_plan():
     parsed["collected"] = merged_collected
 
     return jsonify(parsed)
+
+
+def _validate_survey_payload(payload):
+    """Shared validation for the public digital submission and the admin OPS import.
+    Returns (data_dict, None) on success or (None, (json_response, status)) on failure."""
+    is_anonymous = bool(payload.get("is_anonymous"))
+    student_class = (payload.get("student_class") or "").strip()
+    name = (payload.get("name") or "").strip()
+    school = (payload.get("school") or "").strip()
+
+    if not student_class:
+        return None, (jsonify({"error": "Class is required."}), 400)
+    if not is_anonymous and (not name or not school):
+        return None, (jsonify({"error": "Name and school are required unless submitting anonymously."}), 400)
+
+    answers = {}
+    for q in ("q1", "q2", "q3", "q4"):
+        val = (payload.get(q) or "").strip().lower()
+        if val not in SURVEY_OPTION_LETTERS:
+            return None, (jsonify({"error": q.upper() + " is required."}), 400)
+        answers[q] = val
+    for q in ("q5", "q6", "q7", "q8"):
+        answers[q] = (payload.get(q) or "").strip()
+
+    data = {
+        "is_anonymous": is_anonymous,
+        "name": None if is_anonymous else name,
+        "student_class": student_class,
+        "school": None if is_anonymous else school,
+        **answers,
+    }
+    return data, None
+
+
+def _survey_row_from_data(data, survey_type, pdf_path):
+    return {
+        "is_anonymous": data["is_anonymous"],
+        "respondent_name": data["name"],
+        "student_class": data["student_class"],
+        "school": data["school"],
+        "q1_sleep_hours": data["q1"],
+        "q2_stress_frequency": data["q2"],
+        "q3_breaks": data["q3"],
+        "q4_energy_level": data["q4"],
+        "q5_sleep_time": data["q5"] or None,
+        "q6_wake_time": data["q6"] or None,
+        "q7_tuition_days": data["q7"] or None,
+        "q8_tuition_subjects": data["q8"] or None,
+        "pdf_path": pdf_path,
+        "survey_type": survey_type,
+    }
+
+
+def _get_caller_role(user_token):
+    try:
+        resp = requests.get(
+            SUPABASE_URL + "/rest/v1/profiles",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + user_token},
+            params={"select": "role"},
+            timeout=15,
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    rows = resp.json()
+    return rows[0].get("role") if rows else None
+
+
+def _require_admin_token():
+    """Returns (token, None) on success, or (None, (json_response, status)) on failure."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, (jsonify({"error": "Not authorized."}), 401)
+
+    token = auth_header[len("Bearer "):]
+    if _get_caller_role(token) != "administrator":
+        return None, (jsonify({"error": "Admin access required."}), 403)
+    return token, None
+
+
+@app.route("/api/survey/submit", methods=["POST"])
+def api_survey_submit():
+    payload = request.get_json(silent=True) or {}
+
+    data, error = _validate_survey_payload(payload)
+    if error:
+        return error
+
+    try:
+        pdf_bytes = survey_pdf.generate_filled_pdf(data, mode="digital")
+    except Exception:
+        return jsonify({"error": "Could not generate the survey PDF. Please try again."}), 500
+
+    pdf_path = str(uuid.uuid4()) + ".pdf"
+    storage_headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+        "Content-Type": "application/pdf",
+    }
+
+    try:
+        upload_resp = requests.post(
+            SUPABASE_URL + "/storage/v1/object/survey-pdfs/" + pdf_path,
+            headers=storage_headers,
+            data=pdf_bytes,
+            timeout=20,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Could not save the survey. Please try again."}), 502
+
+    if upload_resp.status_code not in (200, 201):
+        return jsonify({"error": "Could not save the survey PDF. Please try again."}), 502
+
+    row = _survey_row_from_data(data, "digital", pdf_path)
+
+    rest_headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+    try:
+        insert_resp = requests.post(
+            SUPABASE_URL + "/rest/v1/survey_responses",
+            headers=rest_headers,
+            json=row,
+            timeout=20,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Survey PDF saved, but the response record failed. Please try again."}), 502
+
+    if insert_resp.status_code not in (200, 201, 204):
+        return jsonify({"error": "Survey PDF saved, but the response record failed. Please try again."}), 502
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/import-ops", methods=["POST"])
+def api_admin_import_ops():
+    token, error = _require_admin_token()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    data, error = _validate_survey_payload(payload)
+    if error:
+        return error
+
+    # No PDF is generated here — Online Physical Survey PDFs are recreated on export,
+    # straight from this saved data (see /api/admin/survey-export).
+    row = _survey_row_from_data(data, "online_physical", None)
+
+    rest_headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+    try:
+        insert_resp = requests.post(
+            SUPABASE_URL + "/rest/v1/survey_responses",
+            headers=rest_headers,
+            json=row,
+            timeout=20,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Could not reach Supabase. Please try again."}), 502
+
+    if insert_resp.status_code not in (200, 201, 204):
+        return jsonify({"error": "Could not save the response. Please try again."}), 502
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/upload-physical", methods=["POST"])
+def api_admin_upload_physical():
+    token, error = _require_admin_token()
+    if error:
+        return error
+
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "No file provided."}), 400
+
+    file_bytes = file.read()
+    object_path = str(uuid.uuid4()) + ".png"
+
+    storage_headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + token,
+        "Content-Type": "image/png",
+    }
+
+    try:
+        upload_resp = requests.post(
+            SUPABASE_URL + "/storage/v1/object/physical-surveys/" + object_path,
+            headers=storage_headers,
+            data=file_bytes,
+            timeout=30,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Could not reach Supabase. Please try again."}), 502
+
+    if upload_resp.status_code not in (200, 201):
+        return jsonify({"error": "Upload failed. Please try again."}), 502
+
+    return jsonify({"ok": True, "path": object_path})
+
+
+@app.route("/api/admin/survey-export", methods=["POST"])
+def api_admin_survey_export():
+    token, error = _require_admin_token()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or {}
+    want_digital = bool(payload.get("digital"))
+    want_ops = bool(payload.get("online_physical"))
+    want_physical = bool(payload.get("physical"))
+    mask_data = bool(payload.get("mask_data"))
+
+    if not (want_digital or want_ops or want_physical):
+        return jsonify({"error": "Select at least one survey type to export."}), 400
+    if want_ops and want_physical:
+        return jsonify({"error": "Online Physical and Physical Surveys can't both be selected."}), 400
+
+    # We forward the CALLER'S OWN token to Supabase for every request below — never a
+    # service_role key. RLS (see supabase_admin.sql / supabase_import_export.sql) is
+    # what actually grants access: these calls only succeed for an administrator.
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + token,
+    }
+
+    combined = fitz.open()
+    found_any = False
+
+    if want_digital:
+        try:
+            resp = requests.get(
+                SUPABASE_URL + "/rest/v1/survey_responses",
+                headers=headers,
+                params={"select": "pdf_path", "survey_type": "eq.digital", "order": "created_at.asc"},
+                timeout=20,
+            )
+            rows = resp.json() if resp.status_code == 200 else []
+        except requests.RequestException:
+            rows = []
+
+        for row in rows:
+            pdf_path = row.get("pdf_path")
+            if not pdf_path:
+                continue
+            try:
+                pdf_resp = requests.get(
+                    SUPABASE_URL + "/storage/v1/object/survey-pdfs/" + pdf_path,
+                    headers=headers,
+                    timeout=20,
+                )
+            except requests.RequestException:
+                continue
+            if pdf_resp.status_code != 200:
+                continue
+
+            found_any = True
+            pdf_bytes = pdf_resp.content
+            if mask_data:
+                try:
+                    pdf_bytes = survey_pdf.redact_name_school(pdf_bytes)
+                except Exception:
+                    pass
+            try:
+                single = fitz.open(stream=pdf_bytes, filetype="pdf")
+                combined.insert_pdf(single)
+                single.close()
+            except Exception:
+                continue
+
+    if want_ops:
+        try:
+            resp = requests.get(
+                SUPABASE_URL + "/rest/v1/survey_responses",
+                headers=headers,
+                params={
+                    "select": "is_anonymous,respondent_name,student_class,school,"
+                    "q1_sleep_hours,q2_stress_frequency,q3_breaks,q4_energy_level,"
+                    "q5_sleep_time,q6_wake_time,q7_tuition_days,q8_tuition_subjects",
+                    "survey_type": "eq.online_physical",
+                    "order": "created_at.asc",
+                },
+                timeout=20,
+            )
+            rows = resp.json() if resp.status_code == 200 else []
+        except requests.RequestException:
+            rows = []
+
+        for row in rows:
+            data = {
+                "is_anonymous": row.get("is_anonymous"),
+                "name": row.get("respondent_name"),
+                "student_class": row.get("student_class"),
+                "school": row.get("school"),
+                "q1": row.get("q1_sleep_hours"),
+                "q2": row.get("q2_stress_frequency"),
+                "q3": row.get("q3_breaks"),
+                "q4": row.get("q4_energy_level"),
+                "q5": row.get("q5_sleep_time"),
+                "q6": row.get("q6_wake_time"),
+                "q7": row.get("q7_tuition_days"),
+                "q8": row.get("q8_tuition_subjects"),
+            }
+            try:
+                pdf_bytes = survey_pdf.generate_filled_pdf(data, mode="online_physical", mask_data=mask_data)
+                single = fitz.open(stream=pdf_bytes, filetype="pdf")
+                combined.insert_pdf(single)
+                single.close()
+                found_any = True
+            except Exception:
+                continue
+
+    if want_physical:
+        try:
+            resp = requests.post(
+                SUPABASE_URL + "/storage/v1/object/list/physical-surveys",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"prefix": "", "limit": 1000, "sortBy": {"column": "name", "order": "asc"}},
+                timeout=20,
+            )
+            objects = resp.json() if resp.status_code == 200 else []
+        except requests.RequestException:
+            objects = []
+
+        for obj in objects:
+            name = obj.get("name")
+            if not name:
+                continue
+            try:
+                img_resp = requests.get(
+                    SUPABASE_URL + "/storage/v1/object/physical-surveys/" + name,
+                    headers=headers,
+                    timeout=20,
+                )
+            except requests.RequestException:
+                continue
+            if img_resp.status_code != 200:
+                continue
+            try:
+                survey_pdf.png_to_pdf_page(combined, img_resp.content)
+                found_any = True
+            except Exception:
+                continue
+
+    if not found_any:
+        combined.close()
+        return jsonify({"error": "No matching survey data found to export."}), 404
+
+    output = io.BytesIO(combined.tobytes(deflate=True))
+    combined.close()
+    output.seek(0)
+
+    return send_file(
+        output,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name="restwise-survey-export.pdf",
+    )
+
+
+@app.route("/api/admin/surveys-list", methods=["GET"])
+def api_admin_surveys_list():
+    token, error = _require_admin_token()
+    if error:
+        return error
+
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + token,
+    }
+
+    try:
+        resp = requests.get(
+            SUPABASE_URL + "/rest/v1/survey_responses",
+            headers=headers,
+            params={
+                "select": "id,survey_type,is_anonymous,respondent_name,student_class,school,created_at",
+                "order": "created_at.desc",
+            },
+            timeout=20,
+        )
+        responses = resp.json() if resp.status_code == 200 else []
+    except requests.RequestException:
+        responses = []
+
+    try:
+        resp = requests.post(
+            SUPABASE_URL + "/storage/v1/object/list/physical-surveys",
+            headers={**headers, "Content-Type": "application/json"},
+            json={"prefix": "", "limit": 1000, "sortBy": {"column": "name", "order": "desc"}},
+            timeout=20,
+        )
+        objects = resp.json() if resp.status_code == 200 else []
+    except requests.RequestException:
+        objects = []
+
+    physical = [
+        {"name": obj.get("name"), "created_at": obj.get("created_at")}
+        for obj in objects
+        if obj.get("name")
+    ]
+
+    return jsonify({"responses": responses, "physical": physical})
+
+
+@app.route("/api/admin/survey/<response_id>", methods=["DELETE"])
+def api_admin_delete_survey(response_id):
+    token, error = _require_admin_token()
+    if error:
+        return error
+
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + token,
+    }
+
+    try:
+        resp = requests.get(
+            SUPABASE_URL + "/rest/v1/survey_responses",
+            headers=headers,
+            params={"select": "survey_type,pdf_path", "id": "eq." + response_id},
+            timeout=20,
+        )
+        rows = resp.json() if resp.status_code == 200 else []
+    except requests.RequestException:
+        rows = []
+
+    if rows and rows[0].get("survey_type") == "digital" and rows[0].get("pdf_path"):
+        try:
+            requests.delete(
+                SUPABASE_URL + "/storage/v1/object/survey-pdfs/" + rows[0]["pdf_path"],
+                headers=headers,
+                timeout=20,
+            )
+        except requests.RequestException:
+            pass
+
+    try:
+        del_resp = requests.delete(
+            SUPABASE_URL + "/rest/v1/survey_responses",
+            headers=headers,
+            params={"id": "eq." + response_id},
+            timeout=20,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Could not reach Supabase. Please try again."}), 502
+
+    if del_resp.status_code not in (200, 204):
+        return jsonify({"error": "Delete failed. Please try again."}), 502
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/physical/<path:object_name>", methods=["DELETE"])
+def api_admin_delete_physical(object_name):
+    token, error = _require_admin_token()
+    if error:
+        return error
+
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": "Bearer " + token,
+    }
+
+    try:
+        del_resp = requests.delete(
+            SUPABASE_URL + "/storage/v1/object/physical-surveys/" + object_name,
+            headers=headers,
+            timeout=20,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Could not reach Supabase. Please try again."}), 502
+
+    if del_resp.status_code not in (200, 204):
+        return jsonify({"error": "Delete failed. Please try again."}), 502
+
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

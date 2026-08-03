@@ -277,7 +277,7 @@
     breakIntervalValue.textContent = breakIntervalInput.value + " min";
   });
 
-  finalizeBtn.addEventListener("click", function () {
+  finalizeBtn.addEventListener("click", async function () {
     var source = (timetableState && timetableState.source) || [];
     if (!source.length) return; // nothing to finalize yet
 
@@ -294,6 +294,14 @@
     finalizeStatus.style.display = "block";
     finalizeStatus.textContent =
       "Finalized — water breaks added every " + interval + " min during school/tuition. Taking you to the dashboard…";
+
+    // Persist to the server (not just this browser's localStorage) so logging in
+    // from any device correctly recognizes this as an existing, onboarded user.
+    try {
+      await sb.from("timetables").upsert({ id: userId, blocks: timetableState.finalized });
+    } catch (err) {
+      /* best-effort — the redirect still proceeds; the /home page also syncs on save */
+    }
 
     // Finalizing here completes onboarding — from now on, editing happens only
     // in the manual editor, not this AI chat.
@@ -452,6 +460,18 @@
     if (timetableState.source && timetableState.source.length > 0) {
       window.location.href = "/home";
       return;
+    }
+
+    // This browser has no local record, but the server might (new device, cleared
+    // storage) — check before showing onboarding to an already-onboarded parent.
+    try {
+      var serverResult = await sb.from("timetables").select("blocks").eq("id", userId).maybeSingle();
+      if (!serverResult.error && serverResult.data && Array.isArray(serverResult.data.blocks) && serverResult.data.blocks.length > 0) {
+        window.location.href = "/home";
+        return;
+      }
+    } catch (err) {
+      /* no server record reachable — proceed with onboarding as normal */
     }
 
     renderHistoryBubbles();

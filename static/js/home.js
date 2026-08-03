@@ -131,6 +131,12 @@
     };
     savedBlob.selectedDay = selectedDay;
     window.localStorage.setItem(storageKey(), JSON.stringify(savedBlob));
+
+    // Best-effort sync to the server so this counts as an onboarded account from
+    // any device/browser, not just this one (see supabase_smartwatch.sql for RLS).
+    if (userId) {
+      sb.from("timetables").upsert({ id: userId, blocks: sourceBlocks }).then(function () {});
+    }
   }
 
   /* ---------- Time helpers ---------- */
@@ -791,6 +797,441 @@
 
   /* ---------- Init / auth guard ---------- */
 
+  /* ---------- Admin Console ---------- */
+
+  var adminNavItem = document.getElementById("adminNavItem");
+  var adminTotalCount = document.getElementById("adminTotalCount");
+  var adminAnonCount = document.getElementById("adminAnonCount");
+  var adminNamedCount = document.getElementById("adminNamedCount");
+  var adminExportBtn = document.getElementById("adminExportBtn");
+  var adminExportStatus = document.getElementById("adminExportStatus");
+  var adminPromoteEmail = document.getElementById("adminPromoteEmail");
+  var adminPromoteBtn = document.getElementById("adminPromoteBtn");
+  var adminPromoteStatus = document.getElementById("adminPromoteStatus");
+
+  async function loadAdminStats() {
+    var total = await sb.from("survey_responses").select("id", { count: "exact", head: true });
+    var anon = await sb
+      .from("survey_responses")
+      .select("id", { count: "exact", head: true })
+      .eq("is_anonymous", true);
+    var named = await sb
+      .from("survey_responses")
+      .select("id", { count: "exact", head: true })
+      .eq("is_anonymous", false);
+
+    adminTotalCount.textContent = total.error ? "–" : total.count;
+    adminAnonCount.textContent = anon.error ? "–" : anon.count;
+    adminNamedCount.textContent = named.error ? "–" : named.count;
+  }
+
+  async function checkAdminAccess() {
+    var result = await sb.from("profiles").select("role").eq("id", userId).maybeSingle();
+    if (result.error || !result.data || result.data.role !== "administrator") return;
+
+    adminNavItem.style.display = "flex";
+    loadAdminStats();
+    loadSurveysManageList();
+  }
+
+  async function getAccessToken() {
+    var sessionResult = await sb.auth.getSession();
+    return sessionResult.data && sessionResult.data.session && sessionResult.data.session.access_token;
+  }
+
+  /* ---------- Manage surveys ---------- */
+
+  var surveyManageList = document.getElementById("surveyManageList");
+
+  var SURVEY_TYPE_LABELS = {
+    digital: "Digital",
+    online_physical: "Online Physical",
+  };
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  async function loadSurveysManageList() {
+    surveyManageList.innerHTML = '<p class="panel-sub" id="surveyManageEmpty" style="padding:12px 14px;">Loading…</p>';
+    var token = await getAccessToken();
+    if (!token) return;
+
+    var resp;
+    try {
+      resp = await fetch("/api/admin/surveys-list", {
+        headers: { Authorization: "Bearer " + token },
+      });
+    } catch (err) {
+      surveyManageList.innerHTML = '<p class="panel-sub" style="padding:12px 14px;">Could not load surveys.</p>';
+      return;
+    }
+    if (!resp.ok) {
+      surveyManageList.innerHTML = '<p class="panel-sub" style="padding:12px 14px;">Could not load surveys.</p>';
+      return;
+    }
+    var body = await resp.json();
+    var rows = [];
+
+    (body.responses || []).forEach(function (row) {
+      var name = row.is_anonymous ? "Anonymous" : (row.respondent_name || "—");
+      var meta = [row.student_class, row.school, row.created_at ? new Date(row.created_at).toLocaleDateString() : null]
+        .filter(Boolean)
+        .join(" · ");
+      rows.push({
+        kind: "response",
+        id: row.id,
+        typeLabel: SURVEY_TYPE_LABELS[row.survey_type] || row.survey_type,
+        name: name,
+        meta: meta,
+      });
+    });
+
+    (body.physical || []).forEach(function (obj) {
+      rows.push({
+        kind: "physical",
+        id: obj.name,
+        typeLabel: "Physical",
+        name: obj.name,
+        meta: obj.created_at ? new Date(obj.created_at).toLocaleDateString() : "",
+      });
+    });
+
+    if (!rows.length) {
+      surveyManageList.innerHTML = '<p class="panel-sub" style="padding:12px 14px;">No surveys yet.</p>';
+      return;
+    }
+
+    surveyManageList.innerHTML = rows
+      .map(function (row) {
+        return (
+          '<div class="survey-manage-row" data-kind="' + row.kind + '" data-id="' + escapeHtml(row.id) + '">' +
+          '<div class="survey-manage-info">' +
+          '<span class="survey-manage-type">' + escapeHtml(row.typeLabel) + "</span>" +
+          '<span class="survey-manage-name">' + escapeHtml(row.name) + "</span>" +
+          '<span class="survey-manage-meta">' + escapeHtml(row.meta) + "</span>" +
+          "</div>" +
+          '<button type="button" class="survey-manage-delete">Delete</button>' +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
+  surveyManageList.addEventListener("click", async function (e) {
+    var btn = e.target.closest(".survey-manage-delete");
+    if (!btn) return;
+    var row = btn.closest(".survey-manage-row");
+    var kind = row.getAttribute("data-kind");
+    var id = row.getAttribute("data-id");
+
+    if (!window.confirm("Delete this survey entry? This can't be undone.")) return;
+
+    btn.disabled = true;
+    btn.textContent = "Deleting…";
+
+    var token = await getAccessToken();
+    var url = kind === "physical"
+      ? "/api/admin/physical/" + encodeURIComponent(id)
+      : "/api/admin/survey/" + encodeURIComponent(id);
+
+    try {
+      var resp = await fetch(url, {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + token },
+      });
+      if (!resp.ok) throw new Error("delete failed");
+      row.remove();
+      loadAdminStats();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Delete";
+      window.alert("Could not delete that entry. Please try again.");
+    }
+  });
+
+  /* ---------- Export modal ---------- */
+
+  var exportModalOverlay = document.getElementById("exportModalOverlay");
+  var exportDigital = document.getElementById("exportDigital");
+  var exportOps = document.getElementById("exportOps");
+  var exportPhysical = document.getElementById("exportPhysical");
+  var exportMask = document.getElementById("exportMask");
+  var exportAlert = document.getElementById("exportAlert");
+  var exportConfirmBtn = document.getElementById("exportConfirmBtn");
+  var exportModalCloseBtn = document.getElementById("exportModalCloseBtn");
+
+  adminExportBtn.addEventListener("click", function () {
+    exportAlert.style.display = "none";
+    exportModalOverlay.classList.add("show");
+  });
+
+  exportModalCloseBtn.addEventListener("click", function () {
+    exportModalOverlay.classList.remove("show");
+  });
+
+  exportOps.addEventListener("change", function () {
+    if (exportOps.checked) exportPhysical.checked = false;
+  });
+  exportPhysical.addEventListener("change", function () {
+    if (exportPhysical.checked) exportOps.checked = false;
+  });
+
+  exportConfirmBtn.addEventListener("click", async function () {
+    exportAlert.style.display = "none";
+
+    var digital = exportDigital.checked;
+    var ops = exportOps.checked;
+    var physical = exportPhysical.checked;
+    var mask = exportMask.checked;
+
+    if (!digital && !ops && !physical) {
+      exportAlert.className = "alert alert-error";
+      exportAlert.style.display = "flex";
+      exportAlert.textContent = "Select at least one survey type.";
+      return;
+    }
+
+    exportConfirmBtn.disabled = true;
+    exportConfirmBtn.textContent = "Exporting…";
+    adminExportStatus.style.display = "none";
+
+    try {
+      var token = await getAccessToken();
+      var res = await fetch("/api/admin/survey-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify({ digital: digital, online_physical: ops, physical: physical, mask_data: mask })
+      });
+
+      if (!res.ok) {
+        var errData = await res.json().catch(function () { return {}; });
+        exportAlert.className = "alert alert-error";
+        exportAlert.style.display = "flex";
+        exportAlert.textContent = errData.error || "Export failed. Please try again.";
+        return;
+      }
+
+      var blob = await res.blob();
+      var url = window.URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "restwise-survey-export.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      exportModalOverlay.classList.remove("show");
+      adminExportStatus.style.display = "block";
+      adminExportStatus.textContent = "Export downloaded.";
+    } catch (err) {
+      exportAlert.className = "alert alert-error";
+      exportAlert.style.display = "flex";
+      exportAlert.textContent = "Something went wrong. Please try again.";
+    } finally {
+      exportConfirmBtn.disabled = false;
+      exportConfirmBtn.textContent = "Export";
+    }
+  });
+
+  /* ---------- Import: Online Physical Survey ---------- */
+
+  var importOpsBtn = document.getElementById("importOpsBtn");
+  var opsModalOverlay = document.getElementById("opsModalOverlay");
+  var opsModalCloseBtn = document.getElementById("opsModalCloseBtn");
+  var opsForm = document.getElementById("opsForm");
+  var opsSubmitBtn = document.getElementById("opsSubmitBtn");
+  var opsFormAlert = document.getElementById("opsFormAlert");
+  var opsAnonymous = document.getElementById("opsAnonymous");
+  var opsNameGroup = document.getElementById("opsNameGroup");
+  var opsSchoolGroup = document.getElementById("opsSchoolGroup");
+  var opsName = document.getElementById("opsName");
+  var opsSchool = document.getElementById("opsSchool");
+  var opsClass = document.getElementById("opsClass");
+
+  importOpsBtn.addEventListener("click", function () {
+    opsForm.reset();
+    opsNameGroup.style.display = "block";
+    opsSchoolGroup.style.display = "block";
+    opsFormAlert.style.display = "none";
+    opsModalOverlay.classList.add("show");
+  });
+  opsModalCloseBtn.addEventListener("click", function () {
+    opsModalOverlay.classList.remove("show");
+  });
+
+  opsAnonymous.addEventListener("change", function () {
+    var isAnon = opsAnonymous.checked;
+    opsNameGroup.style.display = isAnon ? "none" : "block";
+    opsSchoolGroup.style.display = isAnon ? "none" : "block";
+    if (isAnon) {
+      opsName.value = "";
+      opsSchool.value = "";
+    }
+  });
+
+  function getRadio(form, name) {
+    var checked = form.querySelector('input[name="' + name + '"]:checked');
+    return checked ? checked.value : "";
+  }
+
+  opsForm.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    opsFormAlert.style.display = "none";
+
+    var isAnonymous = opsAnonymous.checked;
+    var payload = {
+      is_anonymous: isAnonymous,
+      name: opsName.value.trim(),
+      school: opsSchool.value.trim(),
+      student_class: opsClass.value,
+      q1: getRadio(opsForm, "ops_q1"),
+      q2: getRadio(opsForm, "ops_q2"),
+      q3: getRadio(opsForm, "ops_q3"),
+      q4: getRadio(opsForm, "ops_q4"),
+      q5: document.getElementById("opsQ5").value.trim(),
+      q6: document.getElementById("opsQ6").value.trim(),
+      q7: document.getElementById("opsQ7").value.trim(),
+      q8: document.getElementById("opsQ8").value.trim()
+    };
+
+    if (!payload.student_class || !payload.q1 || !payload.q2 || !payload.q3 || !payload.q4 ||
+      (!isAnonymous && (!payload.name || !payload.school))) {
+      opsFormAlert.className = "alert alert-error";
+      opsFormAlert.style.display = "flex";
+      opsFormAlert.textContent = "Please fill in all required fields.";
+      return;
+    }
+
+    opsSubmitBtn.disabled = true;
+    opsSubmitBtn.textContent = "Saving…";
+
+    try {
+      var token = await getAccessToken();
+      var res = await fetch("/api/admin/import-ops", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify(payload)
+      });
+      var data = await res.json();
+
+      if (!res.ok || data.error) {
+        opsFormAlert.className = "alert alert-error";
+        opsFormAlert.style.display = "flex";
+        opsFormAlert.textContent = data.error || "Couldn't save that response.";
+        return;
+      }
+
+      opsModalOverlay.classList.remove("show");
+      loadAdminStats();
+    } catch (err) {
+      opsFormAlert.className = "alert alert-error";
+      opsFormAlert.style.display = "flex";
+      opsFormAlert.textContent = "Something went wrong. Please try again.";
+    } finally {
+      opsSubmitBtn.disabled = false;
+      opsSubmitBtn.textContent = "Save Response";
+    }
+  });
+
+  /* ---------- Import: Physical Survey scan upload ---------- */
+
+  var uploadPhysicalBtn = document.getElementById("uploadPhysicalBtn");
+  var physicalUploadModalOverlay = document.getElementById("physicalUploadModalOverlay");
+  var physicalUploadCloseBtn = document.getElementById("physicalUploadCloseBtn");
+  var physicalUploadFile = document.getElementById("physicalUploadFile");
+  var physicalUploadSubmitBtn = document.getElementById("physicalUploadSubmitBtn");
+  var physicalUploadAlert = document.getElementById("physicalUploadAlert");
+
+  uploadPhysicalBtn.addEventListener("click", function () {
+    physicalUploadFile.value = "";
+    physicalUploadAlert.style.display = "none";
+    physicalUploadModalOverlay.classList.add("show");
+  });
+  physicalUploadCloseBtn.addEventListener("click", function () {
+    physicalUploadModalOverlay.classList.remove("show");
+  });
+
+  physicalUploadSubmitBtn.addEventListener("click", async function () {
+    physicalUploadAlert.style.display = "none";
+    var file = physicalUploadFile.files[0];
+
+    if (!file) {
+      physicalUploadAlert.className = "alert alert-error";
+      physicalUploadAlert.style.display = "flex";
+      physicalUploadAlert.textContent = "Choose a PNG file first.";
+      return;
+    }
+
+    physicalUploadSubmitBtn.disabled = true;
+    physicalUploadSubmitBtn.textContent = "Uploading…";
+
+    try {
+      var token = await getAccessToken();
+      var formData = new FormData();
+      formData.append("file", file);
+
+      var res = await fetch("/api/admin/upload-physical", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token },
+        body: formData
+      });
+      var data = await res.json();
+
+      if (!res.ok || data.error) {
+        physicalUploadAlert.className = "alert alert-error";
+        physicalUploadAlert.style.display = "flex";
+        physicalUploadAlert.textContent = data.error || "Upload failed. Please try again.";
+        return;
+      }
+
+      physicalUploadModalOverlay.classList.remove("show");
+    } catch (err) {
+      physicalUploadAlert.className = "alert alert-error";
+      physicalUploadAlert.style.display = "flex";
+      physicalUploadAlert.textContent = "Something went wrong. Please try again.";
+    } finally {
+      physicalUploadSubmitBtn.disabled = false;
+      physicalUploadSubmitBtn.textContent = "Upload";
+    }
+  });
+
+  adminPromoteBtn.addEventListener("click", async function () {
+    var email = adminPromoteEmail.value.trim();
+    adminPromoteStatus.style.display = "none";
+
+    if (!email) {
+      adminPromoteStatus.style.display = "block";
+      adminPromoteStatus.textContent = "Enter an email address first.";
+      return;
+    }
+
+    adminPromoteBtn.disabled = true;
+    adminPromoteBtn.textContent = "Working…";
+
+    try {
+      var result = await sb.rpc("promote_to_admin", { target_email: email });
+      adminPromoteStatus.style.display = "block";
+      if (result.error) {
+        adminPromoteStatus.textContent = result.error.message || "Couldn't promote that user.";
+      } else {
+        adminPromoteStatus.textContent = email + " is now an administrator.";
+        adminPromoteEmail.value = "";
+      }
+    } catch (err) {
+      adminPromoteStatus.style.display = "block";
+      adminPromoteStatus.textContent = "Something went wrong. Please try again.";
+    } finally {
+      adminPromoteBtn.disabled = false;
+      adminPromoteBtn.textContent = "Make Admin";
+    }
+  });
+
+  /* ---------- Init / auth guard ---------- */
+
   (async function init() {
     var sessionResult = await sb.auth.getSession();
     var session = sessionResult.data && sessionResult.data.session;
@@ -802,9 +1243,25 @@
 
     userId = session.user.id;
     loadState();
+
+    // No local record on this browser (new device, cleared storage) — hydrate
+    // from the server copy instead of showing an empty timetable.
+    if (!sourceBlocks.length) {
+      try {
+        var serverResult = await sb.from("timetables").select("blocks").eq("id", userId).maybeSingle();
+        if (!serverResult.error && serverResult.data && Array.isArray(serverResult.data.blocks) && serverResult.data.blocks.length > 0) {
+          sourceBlocks = serverResult.data.blocks;
+          saveState(null);
+        }
+      } catch (err) {
+        /* no server record reachable — proceed with whatever's local */
+      }
+    }
+
     renderDayNav();
     renderRows();
     renderViewTable();
     loadSmartwatchStatus();
+    checkAdminAccess();
   })();
 })();
