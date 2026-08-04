@@ -515,41 +515,6 @@ def api_admin_import_ops():
     return jsonify({"ok": True})
 
 
-@app.route("/api/admin/upload-physical", methods=["POST"])
-def api_admin_upload_physical():
-    token, error = _require_admin_token()
-    if error:
-        return error
-
-    file = request.files.get("file")
-    if not file:
-        return jsonify({"error": "No file provided."}), 400
-
-    file_bytes = file.read()
-    object_path = str(uuid.uuid4()) + ".png"
-
-    storage_headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + token,
-        "Content-Type": "image/png",
-    }
-
-    try:
-        upload_resp = requests.post(
-            SUPABASE_URL + "/storage/v1/object/physical-surveys/" + object_path,
-            headers=storage_headers,
-            data=file_bytes,
-            timeout=30,
-        )
-    except requests.RequestException:
-        return jsonify({"error": "Could not reach Supabase. Please try again."}), 502
-
-    if upload_resp.status_code not in (200, 201):
-        return jsonify({"error": "Upload failed. Please try again."}), 502
-
-    return jsonify({"ok": True, "path": object_path})
-
-
 @app.route("/api/admin/survey-export", methods=["POST"])
 def api_admin_survey_export():
     token, error = _require_admin_token()

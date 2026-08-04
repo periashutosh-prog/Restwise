@@ -1170,21 +1170,22 @@
     physicalUploadSubmitBtn.textContent = "Uploading…";
 
     try {
-      var token = await getAccessToken();
-      var formData = new FormData();
-      formData.append("file", file);
+      // Uploaded straight from the browser to Supabase Storage (RLS-gated to admins,
+      // see supabase_import_export.sql) rather than through the Flask backend — Vercel
+      // serverless functions hard-cap request bodies at 4.5MB, which a full-page scan
+      // can easily exceed. This path has no such limit.
+      var objectPath =
+        (crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(16).slice(2)) + ".png";
 
-      var res = await fetch("/api/admin/upload-physical", {
-        method: "POST",
-        headers: { Authorization: "Bearer " + token },
-        body: formData
+      var uploadResult = await sb.storage.from("physical-surveys").upload(objectPath, file, {
+        contentType: "image/png",
+        upsert: false
       });
-      var data = await res.json();
 
-      if (!res.ok || data.error) {
+      if (uploadResult.error) {
         physicalUploadAlert.className = "alert alert-error";
         physicalUploadAlert.style.display = "flex";
-        physicalUploadAlert.textContent = data.error || "Upload failed. Please try again.";
+        physicalUploadAlert.textContent = uploadResult.error.message || "Upload failed. Please try again.";
         return;
       }
 
