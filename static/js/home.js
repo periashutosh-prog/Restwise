@@ -1006,23 +1006,32 @@
         body: JSON.stringify({ digital: digital, online_physical: ops, physical: physical, mask_data: mask })
       });
 
-      if (!res.ok) {
-        var errData = await res.json().catch(function () { return {}; });
+      var data = await res.json().catch(function () { return {}; });
+
+      if (!res.ok || data.error) {
         exportAlert.className = "alert alert-error";
         exportAlert.style.display = "flex";
-        exportAlert.textContent = errData.error || "Export failed. Please try again.";
+        exportAlert.textContent = data.error || "Export failed. Please try again.";
         return;
       }
 
-      var blob = await res.blob();
-      var url = window.URL.createObjectURL(blob);
+      // The merged PDF is fetched straight from Supabase Storage, not through
+      // Vercel — a big export (several physical-survey scans) can exceed the
+      // 4.5MB body limit Vercel's serverless functions impose either direction.
+      var signResult = await sb.storage.from("survey-pdfs").createSignedUrl(data.path, 300);
+      if (signResult.error || !signResult.data) {
+        exportAlert.className = "alert alert-error";
+        exportAlert.style.display = "flex";
+        exportAlert.textContent = "Export saved, but couldn't get a download link. Please try again.";
+        return;
+      }
+
       var a = document.createElement("a");
-      a.href = url;
+      a.href = signResult.data.signedUrl;
       a.download = "restwise-survey-export.pdf";
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
 
       exportModalOverlay.classList.remove("show");
       adminExportStatus.style.display = "block";
