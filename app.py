@@ -1,13 +1,13 @@
-import io
 import json
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import fitz  # PyMuPDF
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 import survey_pdf
 
@@ -555,23 +555,31 @@ def api_admin_survey_export():
         except requests.RequestException:
             rows = []
 
-        for row in rows:
-            pdf_path = row.get("pdf_path")
-            if not pdf_path:
-                continue
+        pdf_paths = [row.get("pdf_path") for row in rows if row.get("pdf_path")]
+
+        def fetch_pdf(pdf_path):
             try:
-                pdf_resp = requests.get(
+                resp = requests.get(
                     SUPABASE_URL + "/storage/v1/object/survey-pdfs/" + pdf_path,
                     headers=headers,
                     timeout=20,
                 )
             except requests.RequestException:
-                continue
-            if pdf_resp.status_code != 200:
+                return None
+            return resp.content if resp.status_code == 200 else None
+
+        # Fetching each stored PDF one at a time serially made a 100+ response export
+        # take a minute or more (every fetch is its own network round trip to
+        # Supabase). Fetching them concurrently cuts that down to roughly one
+        # round trip's worth of wall-clock time.
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            fetched = list(pool.map(fetch_pdf, pdf_paths))
+
+        for pdf_bytes in fetched:
+            if not pdf_bytes:
                 continue
 
             found_any = True
-            pdf_bytes = pdf_resp.content
             if mask_data:
                 try:
                     pdf_bytes = survey_pdf.redact_name_school(pdf_bytes)
@@ -638,22 +646,27 @@ def api_admin_survey_export():
         except requests.RequestException:
             objects = []
 
-        for obj in objects:
-            name = obj.get("name")
-            if not name:
-                continue
+        names = [obj.get("name") for obj in objects if obj.get("name")]
+
+        def fetch_image(name):
             try:
-                img_resp = requests.get(
+                resp = requests.get(
                     SUPABASE_URL + "/storage/v1/object/physical-surveys/" + name,
                     headers=headers,
                     timeout=20,
                 )
             except requests.RequestException:
-                continue
-            if img_resp.status_code != 200:
+                return None
+            return resp.content if resp.status_code == 200 else None
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            fetched_images = list(pool.map(fetch_image, names))
+
+        for img_bytes in fetched_images:
+            if not img_bytes:
                 continue
             try:
-                survey_pdf.png_to_pdf_page(combined, img_resp.content)
+                survey_pdf.png_to_pdf_page(combined, img_bytes)
                 found_any = True
             except Exception:
                 continue
@@ -662,16 +675,28 @@ def api_admin_survey_export():
         combined.close()
         return jsonify({"error": "No matching survey data found to export."}), 404
 
-    output = io.BytesIO(combined.tobytes(deflate=True))
+    pdf_bytes = combined.tobytes(deflate=True)
     combined.close()
-    output.seek(0)
 
-    return send_file(
-        output,
-        mimetype="application/pdf",
-        as_attachment=True,
-        download_name="restwise-survey-export.pdf",
-    )
+    # Uploaded to storage and handed back as a path (not streamed in the response) —
+    # Vercel serverless functions cap request AND response bodies at 4.5MB, and a
+    # merged export with several physical-survey scans folded in can exceed that
+    # easily. The browser downloads the file straight from Supabase instead.
+    export_path = "exports/" + str(uuid.uuid4()) + ".pdf"
+    try:
+        upload_resp = requests.post(
+            SUPABASE_URL + "/storage/v1/object/survey-pdfs/" + export_path,
+            headers={**headers, "Content-Type": "application/pdf"},
+            data=pdf_bytes,
+            timeout=60,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "Could not reach Supabase. Please try again."}), 502
+
+    if upload_resp.status_code not in (200, 201):
+        return jsonify({"error": "Could not save the export. Please try again."}), 502
+
+    return jsonify({"ok": True, "path": export_path})
 
 
 @app.route("/api/admin/surveys-list", methods=["GET"])
