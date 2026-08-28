@@ -117,10 +117,10 @@
         <section class="app-section" id="section-smartwatch" style="display:none;">
           <div class="dashboard-head">
             <h1>Manage smartwatch</h1>
-            <p>Compile the current timetable into the watch's on-device format, then upload it over USB.</p>
+            <p>Send the current timetable to your Restwise watch over USB. Open the Restwise app on the watch first, then plug it in and press Sync.</p>
           </div>
 
-          <div class="sw-status-grid">
+          <div class="sw-status-grid" style="display:none;">
             <div class="sw-status-card">
               <span class="sw-status-label">Last Compiled</span>
               <span class="sw-status-value" id="swLastCompiled">Never</span>
@@ -136,8 +136,7 @@
           </div>
 
           <div class="sw-actions">
-            <button type="button" class="btn btn-primary btn-lg" id="compileBtn">Compile</button>
-            <button type="button" class="btn btn-ghost btn-lg" id="uploadBtn">Upload</button>
+            <button type="button" class="btn btn-primary btn-lg" id="syncBtn">Sync to Watch</button>
           </div>
 
           <div class="finalize-status" id="swStatusMessage" style="display:none;"></div>

@@ -34,6 +34,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <EEPROM.h>
+#include <LittleFS.h>
 #include <ESP8266WiFi.h>
 #include <RTClib.h>
 #include <Adafruit_SSD1306.h>
@@ -75,15 +76,16 @@ enum ScreenState {
   SCREEN_WATCHFACE, SCREEN_MENU, SCREEN_STOPWATCH, SCREEN_TIMER, SCREEN_TIMER_ALERT,
   SCREEN_CALCULATOR, SCREEN_CALCULATOR_SCI,
   SCREEN_PIN_ENTRY, SCREEN_SECURITY_MENU, SCREEN_SECURITY_CONFIRM,
-  SCREEN_LOCK_SETTINGS, SCREEN_TERMINAL
+  SCREEN_LOCK_SETTINGS, SCREEN_TERMINAL,
+  SCREEN_RESTWISE, SCREEN_RESTWISE_DAY, SCREEN_GOODNIGHT
 };
 ScreenState currentScreen = SCREEN_WATCHFACE;
 
 bool lastButtonStates[5] = {false, false, false, false, false};
 bool buttonJustPressed[5] = {false, false, false, false, false};
 
-const int NUM_MENU_ITEMS = 7;
-const char* menuItems[NUM_MENU_ITEMS] = {"Stopwatch", "Timer", "Calculator", "Security", "Lock Screen", "Terminal", "Lock"};
+const int NUM_MENU_ITEMS = 8;
+const char* menuItems[NUM_MENU_ITEMS] = {"Restwise", "Stopwatch", "Timer", "Calculator", "Security", "Lock Screen", "Terminal", "Lock"};
 int menuIndex = 0;
 
 unsigned long swStartTime = 0;
@@ -202,6 +204,44 @@ bool termConnected = false;
 unsigned long termLastPingAt = 0;
 const unsigned long TERM_PING_STALE_MS = 4000;
 
+// --- Restwise (timetable app) --------------------------------------------
+// The synced timetable is stored in LittleFS at /timetable.rw, one block per
+// line: "<daysBitmask>|<startMin>|<endMin>|<label>". daysBitmask bit0=Mon .. bit6=Sun.
+// startMin/endMin are minutes since midnight. Water breaks are just ordinary
+// blocks in this list (the website already splits them in before syncing).
+#define RW_MAX_BLOCKS   180
+#define RW_DAY_MAX       96   // max blocks shown for a single day
+#define RW_DAY_ROWS       4   // visible timetable rows in the day view
+#define RW_FILE "/timetable.rw"
+
+struct RwBlock {
+  uint8_t  days;       // bit0=Mon ... bit6=Sun
+  uint16_t startMin;
+  uint16_t endMin;
+  char     label[20];
+};
+RwBlock rwBlocks[RW_MAX_BLOCKS];
+int  rwBlockCount = 0;
+bool rwHasData = false;
+
+int  rwCursor = -1;          // -1 = back arrow, 0 = Today, 1..6 = Mon..Sat
+int  rwSelectedDayItem = 0;  // which day-list item the day view is showing
+int  rwDayScroll = 0;        // first visible timetable row in the day view
+
+// Sync protocol (over USB serial, while the Restwise screen is active):
+//   Host->ESP RW_HELLO   ESP->Host RW_HELLO      (connect / keep-alive ping)
+//   Host->ESP RW_BEGIN   ESP->Host RW_READY      (start upload; file opened)
+//   Host->ESP <block line> ... (repeated)        (written straight to the file)
+//   Host->ESP RW_END     ESP->Host RW_OK <count> (file closed, reparsed)
+enum RwSyncState { RWS_IDLE, RWS_RECV };
+RwSyncState rwSyncState = RWS_IDLE;
+String rwLineBuf = "";
+bool rwConnected = false;
+unsigned long rwLastHelloAt = 0;
+const unsigned long RW_HELLO_STALE_MS = 4000;
+File rwFile;
+int rwRecvCount = 0;
+
 void updateDisplay();
 void drawCalculator(int yOffset);
 void drawCalculatorSci(int yOffset);
@@ -230,6 +270,15 @@ void applyTerminalCommand(bool granted);
 void setupButtons();
 DateTime nowTime();
 void setDeviceTime(const DateTime &dt);
+void drawRestwise(int yOffset);
+void drawRestwiseDay(int yOffset);
+void drawGoodNight(int yOffset);
+void processRestwiseSerial();
+void rwLoadFromFile();
+int  rwBuildDayList(int dayIdx, int* out, int maxOut);
+int  rwResolveDayIndex(int item);
+const char* rwDayName(int item);
+bool isNightNow();
 
 void setup() {
   Serial.begin(115200);
@@ -242,6 +291,13 @@ void setup() {
   delay(1);
 
   EEPROM.begin(EEPROM_SIZE);
+
+  // LittleFS holds the synced Restwise timetable. Format once if the flash has
+  // never been mounted (first boot on a fresh chip) so the mount always succeeds.
+  if (!LittleFS.begin()) {
+    LittleFS.format();
+    LittleFS.begin();
+  }
 
   setupButtons();
 
@@ -279,6 +335,7 @@ void setup() {
   Serial.println(F("Display initialized!"));
 
   loadSettings();
+  rwLoadFromFile();
 
   lastActivityTime = millis();
 }
@@ -300,23 +357,35 @@ void loop() {
       displayOn = true;
       animOffsetY = 0;
       isAnimating = false;
-      // Only snap back to the watchface when a PIN is set (so the lock gate
-      // re-triggers). Otherwise resume the screen you were on — waking from a
-      // brief display timeout shouldn't yank you out of the app you're using.
-      // Terminal is the one exception even with a PIN set: it only reads
-      // Serial while it's the active screen, so bouncing it to the watchface
-      // on every wake silently ate every command sent while blanked.
-      if (pinSet && currentScreen != SCREEN_TERMINAL) currentScreen = SCREEN_WATCHFACE;
+
+      // Terminal and Restwise read Serial only while they're the active screen,
+      // so waking must never bounce out of them (that would silently drop any
+      // command/payload sent while the panel was blanked). For every other
+      // screen: at night, greet with Good Night; otherwise snap to the
+      // watchface when a PIN is set (so the lock gate re-triggers), else resume
+      // whatever screen you were on.
+      bool inSerialApp = (currentScreen == SCREEN_TERMINAL ||
+                          currentScreen == SCREEN_RESTWISE ||
+                          currentScreen == SCREEN_RESTWISE_DAY);
+      if (!inSerialApp) {
+        if (isNightNow()) currentScreen = SCREEN_GOODNIGHT;
+        else if (pinSet)  currentScreen = SCREEN_WATCHFACE;
+      }
 
       for (int i = 0; i < 5; i++) buttonJustPressed[i] = false;
     }
   }
 
-  // The Terminal app reads Serial only while it's the active screen, so give
-  // it a chance to see an incoming command (and wake the display for it)
-  // before the blank decision below runs this same frame.
+  // Serial ownership: the Terminal app has its own protocol, so it reads Serial
+  // while active. EVERY other screen hands Serial to the Restwise sync listener.
+  // This matters because opening the USB port from a PC resets the ESP8266 — it
+  // reboots to the watchface, not the Restwise screen — so the sync has to be
+  // reachable from anywhere. processRestwiseSerial() jumps to the Restwise
+  // screen on its own the moment a real sync handshake arrives.
   if (currentScreen == SCREEN_TERMINAL) {
     processTerminalSerial();
+  } else {
+    processRestwiseSerial();
   }
 
   // Idle blanking runs on every screen the user might be sitting on. The single
@@ -388,17 +457,20 @@ void loop() {
         }
         if (buttonJustPressed[4]) {
           if (menuIndex == 0) {
+            rwCursor = -1;
+            startAnimation(SCREEN_RESTWISE, -64);
+          } else if (menuIndex == 1) {
             swFocus = 1;
             startAnimation(SCREEN_STOPWATCH, -64);
-          } else if (menuIndex == 1) {
+          } else if (menuIndex == 2) {
             tmMode = TM_SETTING;
             tmFocus = 1;
             startAnimation(SCREEN_TIMER, -64);
-          } else if (menuIndex == 2) {
+          } else if (menuIndex == 3) {
             calcCursorRow = 0; calcCursorCol = 0;
             calcInput1 = ""; calcInput2 = ""; calcOp = ' '; calcIsOpSet = false; calcError = false;
             startAnimation(SCREEN_CALCULATOR, -64);
-          } else if (menuIndex == 3) {
+          } else if (menuIndex == 4) {
             if (pinSet) {
               pendingAction = ACT_OPEN_MENU;
               enterPinScreen(SEC_VERIFY, SCREEN_MENU);
@@ -407,16 +479,16 @@ void loop() {
               confirmSelection = 0;
               startAnimation(SCREEN_SECURITY_CONFIRM, -64);
             }
-          } else if (menuIndex == 4) {
+          } else if (menuIndex == 5) {
             lockSettingsCursor = -1;
             for (int i = 0; i < 4; i++) if (lockTimeoutOptions[i] == displayTimeoutSec) lockSettingsCursor = i;
             if (lockSettingsCursor == -1) lockSettingsCursor = 0;
             startAnimation(SCREEN_LOCK_SETTINGS, -64);
-          } else if (menuIndex == 5) {
+          } else if (menuIndex == 6) {
             termState = TERM_IDLE;
             termLineBuf = "";
             startAnimation(SCREEN_TERMINAL, -64);
-          } else if (menuIndex == 6) {
+          } else if (menuIndex == 7) {
             startAnimation(SCREEN_WATCHFACE, 64);
           }
         }
@@ -789,6 +861,39 @@ void loop() {
           }
         }
       }
+      else if (currentScreen == SCREEN_RESTWISE) {
+        // Focus moves over the back arrow (-1) and the 7 day items (0..6).
+        // The day list only exists once a timetable has been synced; with no
+        // data the only thing to focus is the back arrow.
+        if (rwHasData) {
+          if (buttonJustPressed[0]) rwCursor = (rwCursor > -1) ? rwCursor - 1 : 6;
+          if (buttonJustPressed[1]) rwCursor = (rwCursor < 6) ? rwCursor + 1 : -1;
+        } else {
+          rwCursor = -1;
+        }
+        if (buttonJustPressed[4]) {
+          if (rwCursor == -1) {
+            startAnimation(SCREEN_MENU, 64);
+          } else if (rwHasData) {
+            rwSelectedDayItem = rwCursor;
+            rwDayScroll = 0;
+            startAnimation(SCREEN_RESTWISE_DAY, -64);
+          }
+        }
+      }
+      else if (currentScreen == SCREEN_RESTWISE_DAY) {
+        // Passive scroll only — rows aren't focusable. LEFT is the sole way back.
+        int idx[RW_DAY_MAX];
+        int n = rwBuildDayList(rwResolveDayIndex(rwSelectedDayItem), idx, RW_DAY_MAX);
+        int maxScroll = (n > RW_DAY_ROWS) ? (n - RW_DAY_ROWS) : 0;
+        if (buttonJustPressed[0] && rwDayScroll > 0) rwDayScroll--;
+        if (buttonJustPressed[1] && rwDayScroll < maxScroll) rwDayScroll++;
+        if (buttonJustPressed[2]) startAnimation(SCREEN_RESTWISE, 64);
+      }
+      else if (currentScreen == SCREEN_GOODNIGHT) {
+        // A passive bedtime greeting — UP scrolls up to the watchface.
+        if (buttonJustPressed[0]) startAnimation(SCREEN_WATCHFACE, -64);
+      }
     }
 
     if (pinErrorMsg.length() > 0 && millis() - pinErrorShownAt > 1500) pinErrorMsg = "";
@@ -923,6 +1028,9 @@ void drawScreen(ScreenState screen, int yOffset) {
   else if (screen == SCREEN_SECURITY_CONFIRM) drawSecurityConfirm(yOffset);
   else if (screen == SCREEN_LOCK_SETTINGS) drawLockSettings(yOffset);
   else if (screen == SCREEN_TERMINAL) drawTerminal(yOffset);
+  else if (screen == SCREEN_RESTWISE) drawRestwise(yOffset);
+  else if (screen == SCREEN_RESTWISE_DAY) drawRestwiseDay(yOffset);
+  else if (screen == SCREEN_GOODNIGHT) drawGoodNight(yOffset);
 }
 
 void drawHeader(int yOffset, const char* appName, bool backFocused) {
@@ -1563,4 +1671,263 @@ void applyTerminalCommand(bool granted) {
   }
   termPendingCmdName = "";
   termPendingArgs = "";
+}
+
+/* ------------------------------ Restwise app ---------------------------- */
+
+bool isNightNow() {
+  int h = nowTime().hour();
+  return (h >= 21 || h < 6);   // 9 PM .. 6 AM
+}
+
+// Day-list item -> Monday-first index (0=Mon .. 6=Sun).
+// Item 0 = "Today" resolves against the clock; 1..6 = Monday..Saturday.
+int rwResolveDayIndex(int item) {
+  if (item == 0) {
+    // RTClib dayOfTheWeek(): 0=Sun..6=Sat. Shift to Monday-first.
+    return (nowTime().dayOfTheWeek() + 6) % 7;
+  }
+  return item - 1;
+}
+
+const char* rwDayName(int item) {
+  if (item == 0) return "Today";
+  static const char* names[6] = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+  return names[item - 1];
+}
+
+// Collect the block indices that apply to `dayIdx` (Mon-first), sorted by start.
+int rwBuildDayList(int dayIdx, int* out, int maxOut) {
+  int n = 0;
+  for (int i = 0; i < rwBlockCount && n < maxOut; i++) {
+    if (rwBlocks[i].days & (1 << dayIdx)) out[n++] = i;
+  }
+  // insertion sort by start time (n is small)
+  for (int i = 1; i < n; i++) {
+    int key = out[i];
+    int j = i - 1;
+    while (j >= 0 && rwBlocks[out[j]].startMin > rwBlocks[key].startMin) {
+      out[j + 1] = out[j];
+      j--;
+    }
+    out[j + 1] = key;
+  }
+  return n;
+}
+
+static void rwParseLine(const String &line) {
+  int p1 = line.indexOf('|');
+  int p2 = line.indexOf('|', p1 + 1);
+  int p3 = line.indexOf('|', p2 + 1);
+  if (p1 < 0 || p2 < 0 || p3 < 0) return;
+
+  long days = line.substring(0, p1).toInt();
+  long sm   = line.substring(p1 + 1, p2).toInt();
+  long em   = line.substring(p2 + 1, p3).toInt();
+  String label = line.substring(p3 + 1);
+  if (days < 0 || days > 127) return;
+  if (sm < 0 || sm > 1440 || em < 0 || em > 1440) return;
+  if (rwBlockCount >= RW_MAX_BLOCKS) return;
+
+  RwBlock &b = rwBlocks[rwBlockCount];
+  b.days = (uint8_t)days;
+  b.startMin = (uint16_t)sm;
+  b.endMin = (uint16_t)em;
+  label.toCharArray(b.label, sizeof(b.label));
+  rwBlockCount++;
+}
+
+void rwLoadFromFile() {
+  rwBlockCount = 0;
+  rwHasData = false;
+
+  File f = LittleFS.open(RW_FILE, "r");
+  if (!f) return;
+
+  while (f.available() && rwBlockCount < RW_MAX_BLOCKS) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() > 0) rwParseLine(line);
+  }
+  f.close();
+  rwHasData = (rwBlockCount > 0);
+}
+
+void processRestwiseSerial() {
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n') {
+      rwLineBuf.trim();
+      String line = rwLineBuf;
+      rwLineBuf = "";
+
+      // Any recognised traffic wakes the panel so a sync is always visible.
+      if (line.length() > 0) {
+        if (!displayOn) {
+          display.ssd1306_command(SSD1306_DISPLAYON);
+          displayOn = true;
+        }
+        lastActivityTime = millis();
+      }
+
+      if (rwSyncState == RWS_RECV) {
+        if (line == "RW_END") {
+          if (rwFile) rwFile.close();
+          rwSyncState = RWS_IDLE;
+          rwLoadFromFile();
+          rwCursor = -1;
+          rwSelectedDayItem = 0;
+          Serial.print("RW_OK "); Serial.println(rwBlockCount);
+        } else if (line.length() > 0) {
+          if (rwFile) rwFile.println(line);
+          rwRecvCount++;
+        }
+      } else { // RWS_IDLE
+        if (line == "RW_HELLO") {
+          rwConnected = true;
+          rwLastHelloAt = millis();
+          Serial.println("RW_HELLO");
+          // A sync is starting — surface the Restwise screen so the user sees
+          // it (the port-open reset likely bounced us to the watchface).
+          if (currentScreen != SCREEN_RESTWISE && currentScreen != SCREEN_RESTWISE_DAY) {
+            currentScreen = SCREEN_RESTWISE;
+            isAnimating = false;
+            animOffsetY = 0;
+            rwCursor = -1;
+          }
+        } else if (line == "RW_BEGIN") {
+          rwFile = LittleFS.open(RW_FILE, "w");
+          if (rwFile) {
+            rwSyncState = RWS_RECV;
+            rwRecvCount = 0;
+            Serial.println("RW_READY");
+          } else {
+            Serial.println("RW_ERR open");
+          }
+          if (currentScreen != SCREEN_RESTWISE && currentScreen != SCREEN_RESTWISE_DAY) {
+            currentScreen = SCREEN_RESTWISE;
+            isAnimating = false;
+            animOffsetY = 0;
+            rwCursor = -1;
+          }
+        }
+      }
+    } else if (c != '\r') {
+      if (rwLineBuf.length() < 120) rwLineBuf += c;  // guard runaway line
+    }
+  }
+}
+
+void drawRestwise(int yOffset) {
+  drawHeader(yOffset, "RESTWISE", (rwCursor == -1));
+
+  bool receiving = (rwSyncState == RWS_RECV);
+  bool connected = rwConnected && (millis() - rwLastHelloAt < RW_HELLO_STALE_MS);
+
+  if (receiving) {
+    drawCenteredText(display, "Receiving...", 30 + yOffset, 1);
+    char buf[20];
+    sprintf(buf, "%d blocks", rwRecvCount);
+    drawCenteredText(display, buf, 44 + yOffset, 1);
+    return;
+  }
+
+  if (!rwHasData) {
+    drawCenteredText(display, "No Data :(", 24 + yOffset, 2);
+    drawCenteredText(display, connected ? "Connected - syncing" : "Sync from the PC", 50 + yOffset, 1);
+    return;
+  }
+
+  // Day list, windowed to 4 visible rows (mirrors the main menu behaviour).
+  const char* items[7] = {"Today", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+  int itemH = 12;
+  int listY = 16 + yOffset;
+  int cur = (rwCursor < 0) ? 0 : rwCursor;
+  int startIdx = (cur < 4) ? 0 : cur - 3;
+  int endIdx = min(startIdx + 4, 7);
+
+  for (int i = startIdx; i < endIdx; i++) {
+    int y = listY + ((i - startIdx) * itemH);
+    if (i == rwCursor) {
+      display.fillRect(0, y - 1, 128, itemH, SSD1306_WHITE);
+      display.setTextColor(SSD1306_BLACK);
+    } else {
+      display.setTextColor(SSD1306_WHITE);
+    }
+    display.setCursor(4, y);
+    display.print(items[i]);
+  }
+  display.setTextColor(SSD1306_WHITE);
+}
+
+void drawRestwiseDay(int yOffset) {
+  // Header band: day name centred, NO back arrow (LEFT is the way back).
+  display.drawFastHLine(0, 12 + yOffset, 128, SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  const char* title = rwDayName(rwSelectedDayItem);
+  int16_t bx, by; uint16_t bw, bh;
+  display.getTextBounds(title, 0, 0, &bx, &by, &bw, &bh);
+  display.setCursor((128 - bw) / 2 - bx, 2 + yOffset);
+  display.print(title);
+
+  int idx[RW_DAY_MAX];
+  int n = rwBuildDayList(rwResolveDayIndex(rwSelectedDayItem), idx, RW_DAY_MAX);
+
+  if (n == 0) {
+    drawCenteredText(display, "No blocks", 32 + yOffset, 1);
+    return;
+  }
+
+  int rowH = 12;
+  int topY = 15 + yOffset;
+  for (int k = 0; k < RW_DAY_ROWS; k++) {
+    int i = rwDayScroll + k;
+    if (i >= n) break;
+    int y = topY + k * rowH;
+    if (k > 0) display.drawFastHLine(0, y - 2, 128, SSD1306_WHITE);
+
+    RwBlock &b = rwBlocks[idx[i]];
+    char t[6];
+    sprintf(t, "%02d:%02d", b.startMin / 60, b.startMin % 60);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(2, y);
+    display.print(t);
+
+    // Label after the time, truncated to what fits (15 chars from x=38).
+    display.setCursor(38, y);
+    int maxChars = 15;
+    if ((int)strlen(b.label) <= maxChars) {
+      display.print(b.label);
+    } else {
+      char trunc[16];
+      strncpy(trunc, b.label, maxChars - 1);
+      trunc[maxChars - 1] = '\0';
+      display.print(trunc);
+      display.print(".");
+    }
+  }
+
+  // Scroll hints on the far right when there's more above/below.
+  if (rwDayScroll > 0) {
+    display.fillTriangle(122, 16 + yOffset, 118, 20 + yOffset, 126, 20 + yOffset, SSD1306_WHITE);
+  }
+  if (rwDayScroll + RW_DAY_ROWS < n) {
+    display.fillTriangle(122, 62 + yOffset, 118, 58 + yOffset, 126, 58 + yOffset, SSD1306_WHITE);
+  }
+}
+
+void drawGoodNight(int yOffset) {
+  // Crescent: a white disc with an offset black disc carving the curve out.
+  int cx = 64, cy = 26 + yOffset, r = 15;
+  display.fillCircle(cx, cy, r, SSD1306_WHITE);
+  display.fillCircle(cx + 7, cy - 4, r, SSD1306_BLACK);
+
+  // A few stars for flair, kept clear of the moon.
+  display.fillCircle(28, 14 + yOffset, 1, SSD1306_WHITE);
+  display.fillCircle(100, 16 + yOffset, 1, SSD1306_WHITE);
+  display.fillCircle(94, 36 + yOffset, 1, SSD1306_WHITE);
+
+  display.setTextColor(SSD1306_WHITE);
+  drawCenteredText(display, "Good Night!", 50 + yOffset, 1);
 }

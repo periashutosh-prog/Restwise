@@ -502,24 +502,9 @@
   var swLastCompiled = document.getElementById("swLastCompiled");
   var swCurrentVersion = document.getElementById("swCurrentVersion");
   var swLatestVersion = document.getElementById("swLatestVersion");
-  var compileBtn = document.getElementById("compileBtn");
-  var uploadBtn = document.getElementById("uploadBtn");
+  var syncBtn = document.getElementById("syncBtn");
   var swStatusMessage = document.getElementById("swStatusMessage");
 
-  var uploadModalOverlay = document.getElementById("uploadModalOverlay");
-  var uploadStepPorts = document.getElementById("uploadStepPorts");
-  var uploadStepConfirm = document.getElementById("uploadStepConfirm");
-  var uploadStepSending = document.getElementById("uploadStepSending");
-  var uploadSendingText = document.getElementById("uploadSendingText");
-  var portList = document.getElementById("portList");
-  var pairNewDeviceBtn = document.getElementById("pairNewDeviceBtn");
-  var serialUnsupportedNote = document.getElementById("serialUnsupportedNote");
-  var confirmUploadBtn = document.getElementById("confirmUploadBtn");
-  var uploadModalCloseBtn = document.getElementById("uploadModalCloseBtn");
-
-  var lastCompiledBytes = null; // in-memory cache of the most recently compiled RWBIN frame
-  var lastCompiledVersion = null; // the "vX.Y" version that goes with lastCompiledBytes
-  var selectedSerialPort = null;
   var smartwatchStatusCache = {}; // last-known row from smartwatch_status
 
   function showSwMessage(text) {
@@ -572,202 +557,156 @@
     );
   }
 
-  compileBtn.addEventListener("click", async function () {
-    if (!sourceBlocks.length) {
-      showSwMessage("Nothing to compile yet — build a timetable first.");
-      return;
-    }
+  /* ---------- Sync to Watch (RW line protocol over Web Serial) ----------
 
-    compileBtn.disabled = true;
-    compileBtn.textContent = "Compiling…";
+     Handshake (each line ends with '\n'):
+       PC -> Watch  RW_HELLO      Watch -> PC  RW_HELLO
+       PC -> Watch  RW_BEGIN      Watch -> PC  RW_READY
+       PC -> Watch  <block line>  ... (repeated: days|startMin|endMin|label)
+       PC -> Watch  RW_END        Watch -> PC  RW_OK <count>
 
-    try {
-      // "Compile" is also the sync point: push the current timetable JSON to
-      // Supabase, then encode it into the binary format the watch understands.
-      await sb.from("timetables").upsert({ id: userId, blocks: sourceBlocks });
+     Opening the port resets the ESP8266, so we wait for it to boot, then
+     retry the HELLO a few times until the firmware answers. */
 
-      var frame = RestwiseProtocol.encodeTimetableBinary(sourceBlocks);
-      var base64 = RestwiseProtocol.bytesToBase64(frame);
-      var nowIso = new Date().toISOString();
-      var nextVersion = nextCompiledVersion(smartwatchStatusCache.latest_version);
-      var releasedAt = todayDateString();
+  var RW_DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]; // bit0..bit6
 
-      var upsertResult = await sb.from("smartwatch_status").upsert({
-        id: userId,
-        compiled_program: base64,
-        compiled_protocol_version: RestwiseProtocol.RWBIN_VERSION,
-        compiled_at: nowIso,
-        latest_version: nextVersion,
-        latest_version_released_at: releasedAt
+  function rwBuildBlockLines() {
+    var lines = [];
+    sourceBlocks.forEach(function (b) {
+      var daysArr = (Array.isArray(b.days) && b.days.length) ? b.days : RW_DAY_ORDER;
+      var mask = 0;
+      daysArr.forEach(function (d) {
+        var i = RW_DAY_ORDER.indexOf(d);
+        if (i >= 0) mask |= (1 << i);
       });
-
-      if (upsertResult.error) {
-        showSwMessage("Compiled, but couldn't save to Supabase: " + upsertResult.error.message);
-      } else {
-        lastCompiledBytes = frame;
-        lastCompiledVersion = nextVersion;
-        smartwatchStatusCache.latest_version = nextVersion;
-        smartwatchStatusCache.latest_version_released_at = releasedAt;
-        smartwatchStatusCache.compiled_at = nowIso;
-
-        swLastCompiled.textContent = formatCompiledAt(nowIso);
-        swLatestVersion.textContent = formatVersion(nextVersion, releasedAt);
-        showSwMessage(
-          "Compiled " + sourceBlocks.length + " blocks into " + frame.length + " bytes (" + nextVersion + ")."
-        );
-      }
-    } catch (err) {
-      showSwMessage("Compile failed. Please try again.");
-    } finally {
-      compileBtn.disabled = false;
-      compileBtn.textContent = "Compile";
-    }
-  });
-
-  function resetUploadModal() {
-    uploadStepPorts.style.display = "block";
-    uploadStepConfirm.style.display = "none";
-    uploadStepSending.style.display = "none";
-    selectedSerialPort = null;
-  }
-
-  function describePort(port, index) {
-    // Web Serial deliberately never exposes the OS-level port name (COM3, /dev/ttyUSB0, ...)
-    // to JS — that's a browser privacy restriction, not something we can read around. VID/PID
-    // is the most specific identifying info actually available, so we number devices for
-    // disambiguation and show VID/PID underneath.
-    var title = "Paired Device " + (index + 1);
-    var subtitle = "USB Serial";
-
-    if (typeof port.getInfo === "function") {
-      var info = port.getInfo() || {};
-      if (info.usbVendorId) {
-        subtitle =
-          "VID " + info.usbVendorId.toString(16).toUpperCase().padStart(4, "0") +
-          (info.usbProductId ? " · PID " + info.usbProductId.toString(16).toUpperCase().padStart(4, "0") : "");
-      }
-    }
-
-    return { title: title, subtitle: subtitle };
-  }
-
-  function portIcon() {
-    return '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="4" y="7" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M9 7V4h6v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
-  }
-
-  async function renderPortList() {
-    portList.innerHTML = "";
-
-    if (!("serial" in navigator)) {
-      serialUnsupportedNote.style.display = "block";
-      pairNewDeviceBtn.style.display = "none";
-      return;
-    }
-    serialUnsupportedNote.style.display = "none";
-    pairNewDeviceBtn.style.display = "block";
-
-    var ports = await navigator.serial.getPorts(); // previously authorized — no popup
-
-    if (!ports.length) {
-      var empty = document.createElement("p");
-      empty.className = "intake-sub";
-      empty.textContent = "No previously connected watches. Pair a new one below.";
-      portList.appendChild(empty);
-      return;
-    }
-
-    ports.forEach(function (port, index) {
-      var desc = describePort(port, index);
-      var btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "port-item";
-      btn.innerHTML =
-        portIcon() +
-        '<span class="port-item-text"><span class="port-item-title"></span><span class="port-item-subtitle"></span></span>';
-      btn.querySelector(".port-item-title").textContent = desc.title;
-      btn.querySelector(".port-item-subtitle").textContent = desc.subtitle;
-      btn.addEventListener("click", function () {
-        selectedSerialPort = port;
-        uploadStepPorts.style.display = "none";
-        uploadStepConfirm.style.display = "block";
-      });
-      portList.appendChild(btn);
+      var sm = timeToMinutes(b.start);
+      var em = timeToMinutes(b.end);
+      var label = (b.label || "").replace(/[|\r\n]/g, " ").slice(0, 19);
+      lines.push(mask + "|" + sm + "|" + em + "|" + label);
     });
+    return lines;
   }
 
-  uploadBtn.addEventListener("click", function () {
-    resetUploadModal();
-    uploadModalOverlay.classList.add("show");
-    renderPortList();
-  });
+  // Background line-reader over a serial port. Accumulates decoded bytes and
+  // exposes waitFor(predicate, timeout) which resolves with the first matching
+  // line (or null on timeout).
+  function rwLineReader(port) {
+    var reader = port.readable.getReader();
+    var decoder = new TextDecoder();
+    var buf = "";
+    var queue = [];
+    var finished = false;
 
-  pairNewDeviceBtn.addEventListener("click", async function () {
-    try {
-      var port = await navigator.serial.requestPort(); // native browser popup — first-time pairing only
-      selectedSerialPort = port;
-      uploadStepPorts.style.display = "none";
-      uploadStepConfirm.style.display = "block";
-    } catch (err) {
-      // User cancelled the native picker — stay on the port list.
-    }
-  });
-
-  confirmUploadBtn.addEventListener("click", async function () {
-    if (!selectedSerialPort) return;
-
-    uploadStepConfirm.style.display = "none";
-    uploadStepSending.style.display = "block";
-    uploadSendingText.textContent = "Sending schedule to watch…";
-
-    try {
-      var bytes = lastCompiledBytes;
-      var version = lastCompiledVersion;
-
-      if (!bytes) {
-        // Not compiled this session — pull the last compiled program from Supabase.
-        var result = await sb
-          .from("smartwatch_status")
-          .select("compiled_program, latest_version")
-          .eq("id", userId)
-          .maybeSingle();
-        if (result.data && result.data.compiled_program) {
-          var binary = window.atob(result.data.compiled_program);
-          bytes = new Uint8Array(binary.length);
-          for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          version = result.data.latest_version;
+    (async function pump() {
+      try {
+        while (true) {
+          var res = await reader.read();
+          if (res.done) break;
+          buf += decoder.decode(res.value, { stream: true });
+          var nl;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            var line = buf.slice(0, nl).replace(/\r$/, "").trim();
+            buf = buf.slice(nl + 1);
+            if (line.length) queue.push(line);
+          }
         }
+      } catch (e) {
+        /* reader cancelled */
       }
+      finished = true;
+    })();
 
-      if (!bytes) {
-        uploadSendingText.textContent = "Nothing compiled yet — run Compile first.";
-        return;
-      }
-
-      await selectedSerialPort.open({ baudRate: 115200 });
-      var writer = selectedSerialPort.writable.getWriter();
-      await writer.write(bytes);
-      writer.releaseLock();
-      await selectedSerialPort.close();
-
-      uploadSendingText.textContent = "Done — " + bytes.length + " bytes sent to the watch.";
-
-      // The upload actually reached the watch — this is now the version running on it.
-      if (version) {
-        var currentVersionUpdate = await sb
-          .from("smartwatch_status")
-          .upsert({ id: userId, current_version: version });
-        if (!currentVersionUpdate.error) {
-          smartwatchStatusCache.current_version = version;
-          swCurrentVersion.textContent = version;
+    return {
+      waitFor: async function (pred, timeoutMs) {
+        var start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          while (queue.length) {
+            var line = queue.shift();
+            if (pred(line)) return line;
+          }
+          if (finished) break;
+          await new Promise(function (r) { setTimeout(r, 25); });
         }
+        return null;
+      },
+      close: async function () {
+        try { await reader.cancel(); } catch (e) {}
+        try { reader.releaseLock(); } catch (e) {}
       }
-    } catch (err) {
-      uploadSendingText.textContent = "Upload failed: " + (err.message || "could not write to the port.");
-    }
-  });
+    };
+  }
 
-  uploadModalCloseBtn.addEventListener("click", function () {
-    uploadModalOverlay.classList.remove("show");
+  syncBtn.addEventListener("click", async function () {
+    if (!("serial" in navigator)) {
+      showSwMessage("This browser doesn't support Web Serial. Use Chrome or Edge on desktop.");
+      return;
+    }
+    if (!sourceBlocks.length) {
+      showSwMessage("No timetable to sync yet — build one in Edit Timetable first.");
+      return;
+    }
+
+    var blockLines = rwBuildBlockLines();
+    var port = null;
+    var reader = null;
+    var writer = null;
+    var encoder = new TextEncoder();
+
+    var send = async function (str) {
+      await writer.write(encoder.encode(str + "\n"));
+    };
+
+    syncBtn.disabled = true;
+    syncBtn.textContent = "Syncing…";
+
+    try {
+      port = await navigator.serial.requestPort(); // native picker — pick the watch
+      await port.open({ baudRate: 115200 });
+
+      // Free the auto-reset lines, then let the ESP8266 finish booting after the
+      // reset that opening the port just triggered.
+      try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+      showSwMessage("Waking the watch…");
+      await new Promise(function (r) { setTimeout(r, 2500); });
+
+      reader = rwLineReader(port);
+      writer = port.writable.getWriter();
+
+      // HELLO handshake, retried while the watch settles.
+      var gotHello = null;
+      for (var attempt = 0; attempt < 6 && !gotHello; attempt++) {
+        await send("RW_HELLO");
+        gotHello = await reader.waitFor(function (l) { return l === "RW_HELLO"; }, 700);
+      }
+      if (!gotHello) throw new Error("watch didn't respond. Open Restwise on the watch and retry.");
+
+      showSwMessage("Connected — sending timetable…");
+      await send("RW_BEGIN");
+      var ready = await reader.waitFor(function (l) { return l === "RW_READY"; }, 3000);
+      if (!ready) throw new Error("watch wasn't ready to receive.");
+
+      for (var i = 0; i < blockLines.length; i++) {
+        await send(blockLines[i]);
+      }
+
+      await send("RW_END");
+      var ok = await reader.waitFor(function (l) { return l.indexOf("RW_OK") === 0; }, 5000);
+      if (!ok) throw new Error("watch didn't confirm the transfer.");
+
+      var count = (ok.split(" ")[1] || blockLines.length);
+      showSwMessage("Synced " + count + " blocks to the watch. Open Restwise to view.");
+
+      // Also mirror the timetable to Supabase so it survives across devices.
+      try { await sb.from("timetables").upsert({ id: userId, blocks: sourceBlocks }); } catch (e) {}
+    } catch (err) {
+      showSwMessage("Sync failed: " + (err.message || "could not talk to the watch."));
+    } finally {
+      try { if (writer) { writer.releaseLock(); } } catch (e) {}
+      try { if (reader) { await reader.close(); } } catch (e) {}
+      try { if (port) { await port.close(); } } catch (e) {}
+      syncBtn.disabled = false;
+      syncBtn.textContent = "Sync to Watch";
+    }
   });
 
   /* ---------- Logout ---------- */
