@@ -140,6 +140,14 @@
           </div>
 
           <div class="finalize-status" id="swStatusMessage" style="display:none;"></div>
+
+          <div class="sw-actions" style="margin-top:18px;">
+            <select class="form-control" id="timeSyncMode" style="max-width:200px;">
+              <option value="system">System Time</option>
+              <option value="custom">Custom Time</option>
+            </select>
+            <button type="button" class="btn btn-ghost btn-lg" id="timeSyncBtn">Sync Date &amp; Time</button>
+          </div>
         </section>
 
         <!-- Admin Console -->
@@ -382,6 +390,30 @@
 
       <button type="button" class="btn btn-primary btn-block" id="physicalUploadSubmitBtn">Upload</button>
       <button type="button" class="btn btn-ghost btn-block" id="physicalUploadCloseBtn" style="margin-top:10px;">Close</button>
+    </div>
+  </div>
+
+  <!-- Custom Date & Time sync -->
+  <div class="modal-overlay" id="customTimeModalOverlay">
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <h3>Set Custom Date &amp; Time</h3>
+      <p class="intake-sub">This is sent to the watch instead of your computer's current time.</p>
+
+      <div class="alert" id="customTimeAlert" style="display:none;"></div>
+
+      <div class="form-group">
+        <label for="customTimeDate">Date</label>
+        <input class="form-control" type="date" id="customTimeDate" />
+        <span class="field-error"></span>
+      </div>
+      <div class="form-group">
+        <label for="customTimeTime">Time</label>
+        <input class="form-control" type="time" id="customTimeTime" step="1" />
+        <span class="field-error"></span>
+      </div>
+
+      <button type="button" class="btn btn-primary btn-block" id="customTimeSyncBtn">Sync to Watch</button>
+      <button type="button" class="btn btn-ghost btn-block" id="customTimeCloseBtn" style="margin-top:10px;">Cancel</button>
     </div>
   </div>
 {% endblock %}

@@ -636,6 +636,50 @@
     };
   }
 
+  function rwFormatStamp(d) {
+    var pad2 = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + " " +
+      pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+  }
+
+  // Opens the user-picked serial port, waits out the ESP8266's auto-reset from
+  // opening it, and completes the RW_HELLO handshake. Shared by the full
+  // timetable sync and the standalone date/time sync below.
+  async function rwOpenAndHello(onStatus) {
+    var port = await navigator.serial.requestPort(); // native picker — pick the watch
+    await port.open({ baudRate: 115200 });
+
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
+    if (onStatus) onStatus("Waking the watch…");
+    await new Promise(function (r) { setTimeout(r, 2500); });
+
+    var reader = rwLineReader(port);
+    var writer = port.writable.getWriter();
+    var encoder = new TextEncoder();
+    var send = async function (str) { await writer.write(encoder.encode(str + "\n")); };
+
+    var gotHello = null;
+    for (var attempt = 0; attempt < 6 && !gotHello; attempt++) {
+      await send("RW_HELLO");
+      gotHello = await reader.waitFor(function (l) { return l === "RW_HELLO"; }, 700);
+    }
+    if (!gotHello) {
+      try { writer.releaseLock(); } catch (e) {}
+      try { await reader.close(); } catch (e) {}
+      try { await port.close(); } catch (e) {}
+      throw new Error("watch didn't respond. Open Restwise on the watch and retry.");
+    }
+
+    return { port: port, reader: reader, writer: writer, send: send };
+  }
+
+  async function rwCloseConn(conn) {
+    if (!conn) return;
+    try { conn.writer.releaseLock(); } catch (e) {}
+    try { await conn.reader.close(); } catch (e) {}
+    try { await conn.port.close(); } catch (e) {}
+  }
+
   syncBtn.addEventListener("click", async function () {
     if (!("serial" in navigator)) {
       showSwMessage("This browser doesn't support Web Serial. Use Chrome or Edge on desktop.");
@@ -647,60 +691,30 @@
     }
 
     var blockLines = rwBuildBlockLines();
-    var port = null;
-    var reader = null;
-    var writer = null;
-    var encoder = new TextEncoder();
-
-    var send = async function (str) {
-      await writer.write(encoder.encode(str + "\n"));
-    };
+    var conn = null;
 
     syncBtn.disabled = true;
     syncBtn.textContent = "Syncing…";
 
     try {
-      port = await navigator.serial.requestPort(); // native picker — pick the watch
-      await port.open({ baudRate: 115200 });
-
-      // Free the auto-reset lines, then let the ESP8266 finish booting after the
-      // reset that opening the port just triggered.
-      try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
-      showSwMessage("Waking the watch…");
-      await new Promise(function (r) { setTimeout(r, 2500); });
-
-      reader = rwLineReader(port);
-      writer = port.writable.getWriter();
-
-      // HELLO handshake, retried while the watch settles.
-      var gotHello = null;
-      for (var attempt = 0; attempt < 6 && !gotHello; attempt++) {
-        await send("RW_HELLO");
-        gotHello = await reader.waitFor(function (l) { return l === "RW_HELLO"; }, 700);
-      }
-      if (!gotHello) throw new Error("watch didn't respond. Open Restwise on the watch and retry.");
+      conn = await rwOpenAndHello(showSwMessage);
 
       // Set the watch clock to the PC's current date/time (also drives the
       // night-time Good Night greeting). Best-effort — don't block the sync on it.
-      var now = new Date();
-      var pad2 = function (n) { return String(n).padStart(2, "0"); };
-      var stamp =
-        now.getFullYear() + "-" + pad2(now.getMonth() + 1) + "-" + pad2(now.getDate()) + " " +
-        pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
-      await send("RW_TIME " + stamp);
-      await reader.waitFor(function (l) { return l === "RW_TIME_OK"; }, 1500);
+      await conn.send("RW_TIME " + rwFormatStamp(new Date()));
+      await conn.reader.waitFor(function (l) { return l === "RW_TIME_OK"; }, 1500);
 
       showSwMessage("Connected — sending timetable…");
-      await send("RW_BEGIN");
-      var ready = await reader.waitFor(function (l) { return l === "RW_READY"; }, 3000);
+      await conn.send("RW_BEGIN");
+      var ready = await conn.reader.waitFor(function (l) { return l === "RW_READY"; }, 3000);
       if (!ready) throw new Error("watch wasn't ready to receive.");
 
       for (var i = 0; i < blockLines.length; i++) {
-        await send(blockLines[i]);
+        await conn.send(blockLines[i]);
       }
 
-      await send("RW_END");
-      var ok = await reader.waitFor(function (l) { return l.indexOf("RW_OK") === 0; }, 5000);
+      await conn.send("RW_END");
+      var ok = await conn.reader.waitFor(function (l) { return l.indexOf("RW_OK") === 0; }, 5000);
       if (!ok) throw new Error("watch didn't confirm the transfer.");
 
       var count = (ok.split(" ")[1] || blockLines.length);
@@ -711,12 +725,79 @@
     } catch (err) {
       showSwMessage("Sync failed: " + (err.message || "could not talk to the watch."));
     } finally {
-      try { if (writer) { writer.releaseLock(); } } catch (e) {}
-      try { if (reader) { await reader.close(); } } catch (e) {}
-      try { if (port) { await port.close(); } } catch (e) {}
+      await rwCloseConn(conn);
       syncBtn.disabled = false;
       syncBtn.textContent = "Sync to Watch";
     }
+  });
+
+  /* ---------- Date & Time sync (System Time / Custom Time) ---------- */
+
+  var timeSyncMode = document.getElementById("timeSyncMode");
+  var timeSyncBtn = document.getElementById("timeSyncBtn");
+  var customTimeModalOverlay = document.getElementById("customTimeModalOverlay");
+  var customTimeDate = document.getElementById("customTimeDate");
+  var customTimeTime = document.getElementById("customTimeTime");
+  var customTimeAlert = document.getElementById("customTimeAlert");
+  var customTimeSyncBtn = document.getElementById("customTimeSyncBtn");
+  var customTimeCloseBtn = document.getElementById("customTimeCloseBtn");
+
+  async function rwSyncTime(stamp) {
+    if (!("serial" in navigator)) {
+      showSwMessage("This browser doesn't support Web Serial. Use Chrome or Edge on desktop.");
+      return;
+    }
+
+    var conn = null;
+    timeSyncBtn.disabled = true;
+    var originalLabel = timeSyncBtn.textContent;
+    timeSyncBtn.textContent = "Syncing…";
+
+    try {
+      conn = await rwOpenAndHello(showSwMessage);
+
+      await conn.send("RW_TIME " + stamp);
+      var ok = await conn.reader.waitFor(function (l) { return l === "RW_TIME_OK" || l.indexOf("RW_ERR") === 0; }, 1500);
+      if (!ok || ok.indexOf("RW_ERR") === 0) throw new Error("watch rejected that date/time.");
+
+      showSwMessage("Watch clock set to " + stamp + ".");
+    } catch (err) {
+      showSwMessage("Time sync failed: " + (err.message || "could not talk to the watch."));
+    } finally {
+      await rwCloseConn(conn);
+      timeSyncBtn.disabled = false;
+      timeSyncBtn.textContent = originalLabel;
+    }
+  }
+
+  timeSyncBtn.addEventListener("click", function () {
+    if (timeSyncMode.value === "custom") {
+      var now = new Date();
+      var pad2 = function (n) { return String(n).padStart(2, "0"); };
+      customTimeDate.value = now.getFullYear() + "-" + pad2(now.getMonth() + 1) + "-" + pad2(now.getDate());
+      customTimeTime.value = pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
+      customTimeAlert.style.display = "none";
+      customTimeModalOverlay.classList.add("show");
+      return;
+    }
+    rwSyncTime(rwFormatStamp(new Date()));
+  });
+
+  customTimeCloseBtn.addEventListener("click", function () {
+    customTimeModalOverlay.classList.remove("show");
+  });
+
+  customTimeSyncBtn.addEventListener("click", function () {
+    if (!customTimeDate.value || !customTimeTime.value) {
+      customTimeAlert.className = "alert alert-error";
+      customTimeAlert.style.display = "flex";
+      customTimeAlert.textContent = "Pick both a date and a time.";
+      return;
+    }
+    var timeVal = customTimeTime.value.length === 5 ? customTimeTime.value + ":00" : customTimeTime.value;
+    var stamp = customTimeDate.value + " " + timeVal;
+    customTimeModalOverlay.classList.remove("show");
+    rwSyncTime(stamp);
   });
 
   /* ---------- Logout ---------- */
