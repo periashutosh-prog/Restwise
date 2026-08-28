@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Set Your Schedule — Restwise{% endblock %}
+
+{% block content %}
+  <main>
+    <section class="auth-page">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="auth-card">
+        <div class="auth-card-head">
+          <span class="eyebrow"><span class="dot"></span> Set Your Schedule</span>
+          <h1>Create your Restwise account</h1>
+          <p>Tell us about your student and their routine — we'll build a sleep-safe schedule from it.</p>
+        </div>
+
+        <div class="alert" id="formAlert" style="display:none;"></div>
+
+        <form id="signupForm" novalidate>
+          <div class="form-section-label">Account</div>
+
+          <div class="form-group">
+            <label for="email">Email address</label>
+            <input class="form-control" type="email" id="email" name="email" placeholder="parent@example.com" required />
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="password">Password</label>
+              <input class="form-control" type="password" id="password" name="password" placeholder="At least 8 characters" required minlength="8" />
+              <span class="field-error"></span>
+            </div>
+            <div class="form-group">
+              <label for="confirmPassword">Confirm password</label>
+              <input class="form-control" type="password" id="confirmPassword" name="confirmPassword" placeholder="Re-enter password" required minlength="8" />
+              <span class="field-error"></span>
+            </div>
+          </div>
+
+          <div class="form-section-label">Parent / Guardian</div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="parentName">Parent name</label>
+              <input class="form-control" type="text" id="parentName" name="parentName" required />
+            </div>
+            <div class="form-group">
+              <label for="parentSurname">Parent Lastname</label>
+              <input class="form-control" type="text" id="parentSurname" name="parentSurname" required />
+            </div>
+          </div>
+
+          <div class="form-section-label">Student</div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="studentName">Student name</label>
+              <input class="form-control" type="text" id="studentName" name="studentName" required />
+            </div>
+            <div class="form-group">
+              <label for="studentLastName">Student last name</label>
+              <input class="form-control" type="text" id="studentLastName" name="studentLastName" required />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="studentDob">Student date of birth</label>
+              <input class="form-control" type="date" id="studentDob" name="studentDob" required />
+            </div>
+            <div class="form-group">
+              <label for="studentClass">Class</label>
+              <select class="form-control" id="studentClass" name="studentClass" required>
+                <option value="" disabled selected>Select class</option>
+                <option>Class 1</option>
+                <option>Class 2</option>
+                <option>Class 3</option>
+                <option>Class 4</option>
+                <option>Class 5</option>
+                <option>Class 6</option>
+                <option>Class 7</option>
+                <option>Class 8</option>
+                <option>Class 9</option>
+                <option>Class 10</option>
+                <option>Class 11</option>
+                <option>Class 12</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-section-label">StrawberryWatch</div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="watchAvailable">StrawberryWatch available?</label>
+              <select class="form-control" id="watchAvailable" name="watchAvailable" required>
+                <option value="no" selected>No</option>
+                <option value="yes">Yes</option>
+              </select>
+            </div>
+            <div class="form-group conditional-field" id="watchModelGroup">
+              <label for="watchModel">Model</label>
+              <select class="form-control" id="watchModel" name="watchModel" disabled>
+                <option value="" disabled selected>Select model</option>
+                <option value="REV 1.0">REV 1.0</option>
+                <option value="REV 2.0">REV 2.0</option>
+              </select>
+              <span class="field-error"></span>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-lg btn-block" id="signupSubmit">Create account</button>
+        </form>
+
+        <div class="auth-switch">Already have an account? <a href="/login">Log in</a></div>
+      </div>
+    </section>
+  </main>
+{% endblock %}
+
+{% block scripts %}
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="{{ url_for('static', filename='js/supabase-client.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/auth-modal.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/nav-auth.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/signup.js') }}"></script>
+{% endblock %}

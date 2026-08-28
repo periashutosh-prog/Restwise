@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <script>
+    // Auth guard: runs before anything paints, so a signed-out visitor forcing a
+    // direct link to /home or /dashboard never sees a flash of the app shell —
+    // supabase-js persists the session under this localStorage key.
+    (function () {
+      var raw = null;
+      try {
+        raw = window.localStorage.getItem("sb-lbgtdhzwcqztxocygbgw-auth-token");
+      } catch (err) {}
+
+      var hasSession = false;
+      if (raw) {
+        try {
+          hasSession = !!JSON.parse(raw).access_token;
+        } catch (err) {}
+      }
+
+      if (!hasSession) {
+        window.location.replace("/login");
+      }
+    })();
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Dashboard — Restwise{% endblock %}</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='img/favicon-32.png') }}" />
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='img/favicon-16.png') }}" />
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="app-no-scroll">
+
+  <nav class="nav" id="nav">
+    <div class="nav-inner nav-inner-app">
+      <div class="nav-col nav-col-left">
+        {% block nav_leading %}{% endblock %}
+      </div>
+
+      <a href="/home" class="brand nav-col-center">
+        <span class="brand-mark">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 3v3M12 18v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M3 12h3M18 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+            <circle cx="12" cy="12" r="4.2" fill="white"/>
+          </svg>
+        </span>
+        Restwise
+        <span class="mode-badge">Parent Mode</span>
+      </a>
+
+      <div class="nav-col nav-col-right">
+        <div class="nav-actions">
+          <button class="btn btn-ghost" id="logoutBtn">Log Out</button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  <footer class="app-footer">
+    <span class="footer-copyright">&copy; 2026 Restwise. All rights reserved.</span>
+  </footer>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="{{ url_for('static', filename='js/supabase-client.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/auth-modal.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <script>
+    // Safety net: if Supabase's password-recovery redirect lands here instead of
+    // /reset-password (e.g. because the exact redirect URL isn't in the Supabase
+    // allow-list yet, so it fell back to the Site URL), forward immediately while
+    // preserving the token fragment so /reset-password's own client can consume it.
+    (function () {
+      if (window.location.pathname !== "/reset-password" && window.location.hash.indexOf("type=recovery") !== -1) {
+        window.location.replace("/reset-password" + window.location.hash);
+      }
+    })();
+  </script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Restwise — A smartwatch that protects your sleep{% endblock %}</title>
+  <meta name="description" content="Restwise is a radio-free ESP32 smartwatch and companion website that protects student sleep, enforces healthy breaks, and reduces exam stress." />
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='img/favicon-32.png') }}" />
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='img/favicon-16.png') }}" />
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+  {% include "_nav.html" %}
+
+  {% block content %}{% endblock %}
+
+  {% include "_footer.html" %}
+
+  <div class="toast" id="toast"></div>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
