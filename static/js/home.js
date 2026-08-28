@@ -680,6 +680,16 @@
       }
       if (!gotHello) throw new Error("watch didn't respond. Open Restwise on the watch and retry.");
 
+      // Set the watch clock to the PC's current date/time (also drives the
+      // night-time Good Night greeting). Best-effort — don't block the sync on it.
+      var now = new Date();
+      var pad2 = function (n) { return String(n).padStart(2, "0"); };
+      var stamp =
+        now.getFullYear() + "-" + pad2(now.getMonth() + 1) + "-" + pad2(now.getDate()) + " " +
+        pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
+      await send("RW_TIME " + stamp);
+      await reader.waitFor(function (l) { return l === "RW_TIME_OK"; }, 1500);
+
       showSwMessage("Connected — sending timetable…");
       await send("RW_BEGIN");
       var ready = await reader.waitFor(function (l) { return l === "RW_READY"; }, 3000);

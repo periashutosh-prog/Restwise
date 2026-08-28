@@ -1795,6 +1795,17 @@ void processRestwiseSerial() {
             animOffsetY = 0;
             rwCursor = -1;
           }
+        } else if (line.startsWith("RW_TIME ")) {
+          // The PC sets the watch clock as part of each sync: "RW_TIME
+          // YYYY-MM-DD HH:MM:SS". This also feeds the night-time Good Night
+          // greeting, which keys off the real hour.
+          int y, mo, d, h, mi, s;
+          if (sscanf(line.c_str() + 8, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6) {
+            setDeviceTime(DateTime(y, mo, d, h, mi, s));
+            Serial.println("RW_TIME_OK");
+          } else {
+            Serial.println("RW_ERR time");
+          }
         } else if (line == "RW_BEGIN") {
           rwFile = LittleFS.open(RW_FILE, "w");
           if (rwFile) {
