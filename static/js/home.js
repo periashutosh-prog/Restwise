@@ -219,10 +219,13 @@
   function renderRows() {
     editRows.innerHTML = "";
 
+    // Deliberately NOT sorted by time — kept in the order blocks were added,
+    // so a newly added block always lands at the bottom instead of jumping
+    // wherever its default start time happens to fall chronologically.
+    // (View Timetable has its own sorted read-only rendering separately.)
     var dayBlocks = sourceBlocks
       .map(function (block, index) { return { block: block, index: index }; })
-      .filter(function (entry) { return blockAppliesToDay(entry.block, selectedDay); })
-      .sort(function (a, b) { return timeToMinutes(a.block.start) - timeToMinutes(b.block.start); });
+      .filter(function (entry) { return blockAppliesToDay(entry.block, selectedDay); });
 
     if (!dayBlocks.length) {
       editEmpty.style.display = "flex";
@@ -272,7 +275,6 @@
     startInput.addEventListener("change", function () {
       sourceBlocks[index].start = startInput.value;
       saveState();
-      renderRows();
       renderViewTable();
     });
 
@@ -283,7 +285,6 @@
     endInput.addEventListener("change", function () {
       sourceBlocks[index].end = endInput.value;
       saveState();
-      renderRows();
       renderViewTable();
     });
 

@@ -1,16 +1,43 @@
-// StrawberryOS - A smartwatch OS for ESP32
+// StrawberryOS8266 - A smartwatch OS for the ESP8266 (NodeMCU v1)
 // Copyright (C) 2026 Ashutosh
 //
+// Port of StrawberryOS (ESP32-C3) to ESP8266. All UI/app code is unchanged;
+// only the platform layer differs. See PORTING NOTES below.
+//
 // See the LICENSE file for more details.
+//
+// ---------------------------------------------------------------------------
+// PORTING NOTES (ESP32-C3 -> ESP8266 NodeMCU v1)
+// ---------------------------------------------------------------------------
+// * Buttons are polled from loop(). The ESP8266 Arduino core has no FreeRTOS
+//   task API, so the old xTaskCreate() reader thread is gone.
+// * Preferences (NVS) doesn't exist here -> settings live in EEPROM instead.
+// * Light sleep with per-GPIO wakeup isn't available in the ESP8266 Arduino
+//   core, so the sleep stage is dropped. The display still blanks on idle,
+//   which is where most of the power saving came from anyway.
+// * The whole 32.768kHz-crystal / GPIO-reclaim workaround was ESP32-C3
+//   silicon-specific and is deleted.
+// * The RTC is now OPTIONAL. With no DS3231 attached the watch keeps time in
+//   software from millis(), starting at 12:00, instead of halting at boot.
+//
+// WIRING (NodeMCU v1 silkscreen labels)
+//   D1 -> LEFT    D2 -> CENTER   D3 -> RIGHT   D4 -> UP   D5 -> DOWN
+//   D6 -> SDA     D7 -> SCL
+//   All buttons wire to GND (active-low, internal pull-ups — no external
+//   resistors needed). D0 (the one ESP8266 pin with no internal pull-up) is
+//   deliberately left unused here.
+//
+//   Note D3 (GPIO0) and D4 (GPIO2) are boot-strapping pins: they must be HIGH
+//   at power-on. That's the idle state for a button wired to GND, so normal
+//   operation is fine — just don't hold RIGHT or UP while resetting.
+// ---------------------------------------------------------------------------
 #include <Arduino.h>
 #include <Wire.h>
-#include <SPI.h>
+#include <EEPROM.h>
+#include <ESP8266WiFi.h>
 #include <RTClib.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
-#include <Preferences.h>
-#include <esp_sleep.h>
-#include <driver/gpio.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -19,35 +46,30 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 RTC_DS3231 rtc;
 
-#define BTN_UP 2
-#define BTN_DOWN 20
-#define BTN_LEFT 1
-#define BTN_RIGHT 4
-#define BTN_CENTER 3
+// I2C
+#define PIN_SDA D6
+#define PIN_SCL D7
 
-volatile bool buttonStates[5] = {false, false, false, false, false};
+// Buttons (see wiring note above)
+#define BTN_UP     D4
+#define BTN_DOWN   D5
+#define BTN_LEFT   D1
+#define BTN_RIGHT  D3
+#define BTN_CENTER D2
+
+bool buttonStates[5] = {false, false, false, false, false};
 const uint8_t buttonPins[5] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_CENTER};
 
-// On the ESP32-C3, GPIO0 and GPIO1 are physically the XTAL_32K_P / XTAL_32K_N
-// pads for the optional 32.768kHz crystal (see IO_MUX_GPIO1_REG, which is
-// literally #defined to PERIPHS_IO_MUX_XTAL_32K_N_U). BTN_LEFT sits on GPIO1.
-//
-// If that oscillator is ever enabled, the pad switches to an ANALOG function:
-// the digital input buffer and its internal pull-up are disconnected from the
-// pad outright, so pinMode(INPUT_PULLUP) and digitalRead() stop meaning
-// anything and the pin floats near 0V — i.e. reads as permanently held down,
-// which pins lastActivityTime and blocks sleep forever.
-//
-// That oscillator setting lives in the always-on RTC domain, so it survives a
-// soft reset and a reflash; only a full power cycle clears it. That's exactly
-// why reflashing never fixed it but jumpering the pin to 3V3 did.
-//
-// Declared here rather than via <soc/rtc.h> to avoid dragging that header's
-// macros into a translation unit that also includes RTClib.
-extern "C" void rtc_clk_32k_enable(bool en);
-extern "C" bool rtc_clk_32k_enabled(void);
 uint8_t statusIndex = 0;
 bool isStatusActive = false;
+
+// --- Timekeeping ---------------------------------------------------------
+// rtcPresent is decided once at boot. When there's no DS3231 on the bus the
+// watch falls back to a software clock driven by millis(), based at 12:00, so
+// it stays usable (and demo-able) instead of dying on a "RTC Error!" halt.
+bool rtcPresent = false;
+DateTime softBase(2026, 1, 1, 12, 0, 0);
+unsigned long softBaseMillis = 0;
 
 enum ScreenState {
   SCREEN_WATCHFACE, SCREEN_MENU, SCREEN_STOPWATCH, SCREEN_TIMER, SCREEN_TIMER_ALERT,
@@ -88,12 +110,8 @@ unsigned long lastActivityTime = 0;
 const int lockTimeoutOptions[4] = {5, 10, 15, 30};
 int displayTimeoutSec = 5;
 unsigned long DISPLAY_TIMEOUT_MS = 5000;
-const unsigned long DEEP_SLEEP_DELAY_MS = 10000; // fixed 10s after display off
 bool displayOn = true;
-unsigned long displayOffAt = 0;
 int lockSettingsCursor = 0;
-
-Preferences prefs;
 
 // Calculator variables
 int calcCursorRow = 0, calcCursorCol = 0;
@@ -154,11 +172,22 @@ const char* pinKeys[4][3] = {
   {"<", "0", "OK"}
 };
 
+// --- Settings storage (EEPROM stand-in for ESP32 Preferences) ---
+#define EEPROM_SIZE 64
+#define SETTINGS_MAGIC 0x52573031UL   // "RW01"
+
+struct StoredSettings {
+  uint32_t magic;
+  uint8_t  pinSet;
+  char     pin[5];      // 4 digits + NUL
+  uint8_t  timeoutSec;
+};
+
 // --- Terminal (USB command console) ---
 // Wire protocol from strawberry-terminal (Python): a line "CONFIRM <cmd> <args>"
 // puts the watch into TERM_CONFIRM, showing <cmd>/<args> with a Yes/No prompt.
 // The button choice is sent back as "ACK <cmd> YES" or "ACK <cmd> NO". Only
-// "set_time <YYYY-MM-DD HH:MM:SS>" is understood right now (adjusts the RTC).
+// "set_time <YYYY-MM-DD HH:MM:SS>" is understood right now.
 enum TerminalState { TERM_IDLE, TERM_CONFIRM };
 TerminalState termState = TERM_IDLE;
 String termLineBuf = "";
@@ -166,11 +195,9 @@ String termPendingCmdName = "";
 String termPendingArgs = "";
 int termConfirmSelection = 0; // 0=Yes, 1=No
 
-// strawberry-terminal sends "PING" every 2s while a session is open (it
-// can't just check DTR — it deliberately holds that low to dodge the
-// ESP32-C3's USB-CDC reset trigger). A ping within the last 4s means a live
-// host is attached; that's what flips the idle screen from "Listening" to
-// "Connected!".
+// strawberry-terminal sends "PING" every 2s while a session is open. A ping
+// within the last 4s means a live host is attached; that's what flips the idle
+// screen from "Listening" to "Connected!".
 bool termConnected = false;
 unsigned long termLastPingAt = 0;
 const unsigned long TERM_PING_STALE_MS = 4000;
@@ -188,99 +215,82 @@ void drawTimerAlert(int yOffset);
 void drawCenteredText(Adafruit_SSD1306 &d, const String &text, int16_t y, uint8_t size = 1);
 void drawBoxedCenteredText(Adafruit_SSD1306 &d, const char* text, int x, int y, int w, int h, bool inverted);
 void startAnimation(ScreenState next, int targetOffset);
-void buttonReadTask(void *pvParameters);
-void printButtonStates();
+void readButtons();
 void drawPinEntry(int yOffset);
 void drawSecurityMenu(int yOffset);
 void drawSecurityConfirm(int yOffset);
 void handlePinSubmit();
-void loadSecuritySettings();
-void savePinSettings();
+void loadSettings();
+void saveSettings();
 void enterPinScreen(SecurityFlow flow, ScreenState returnTo);
 void drawLockSettings(int yOffset);
-void loadLockSettings();
-void saveLockSettings();
-void goToDeepSleep();
 void drawTerminal(int yOffset);
 void processTerminalSerial();
 void applyTerminalCommand(bool granted);
-void reclaimButtonPins();
+void setupButtons();
+DateTime nowTime();
+void setDeviceTime(const DateTime &dt);
 
 void setup() {
   Serial.begin(115200);
   delay(100);
 
-  Wire.begin(9, 10);
+  // Restwise is deliberately a no-radio device — kill the WiFi stack outright
+  // rather than merely leaving it unused, so the chip never transmits.
+  WiFi.mode(WIFI_OFF);
+  WiFi.forceSleepBegin();
+  delay(1);
+
+  EEPROM.begin(EEPROM_SIZE);
+
+  setupButtons();
+
+  Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(400000); // 400kHz I2C for fast, flicker-free OLED refresh
   delay(100);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
-    while (1);
+    while (1) { delay(100); yield(); }  // yield(): a bare while(1) trips the ESP8266 WDT
   }
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-
   display.display();
   delay(100);
 
-  if (!rtc.begin()) {
-    Serial.println("RTC not found!");
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.println("RTC Error!");
-    display.display();
-    while (1);
+  // The RTC is optional. If it isn't on the bus we log it and run on the
+  // software clock — the watch must never halt just because the DS3231 is
+  // missing (that used to be a dead-end while(1) here).
+  if (rtc.begin()) {
+    rtcPresent = true;
+    if (rtc.lostPower()) {
+      Serial.println(F("RTC lost power - seeding to 12:00"));
+      rtc.adjust(DateTime(2026, 1, 1, 12, 0, 0));
+    }
+    Serial.println(F("RTC found."));
+  } else {
+    rtcPresent = false;
+    softBase = DateTime(2026, 1, 1, 12, 0, 0);
+    softBaseMillis = millis();
+    Serial.println(F("RTC NOT found - using software clock from 12:00"));
   }
 
-  Serial.print("32k XTAL osc was: ");
-  Serial.println(rtc_clk_32k_enabled() ? "ON (this is the GPIO1 bug)" : "off");
+  Serial.println(F("Display initialized!"));
 
-  reclaimButtonPins();
-
-  xTaskCreate(
-    buttonReadTask,
-    "ButtonReader",
-    2048,
-    NULL,
-    1,
-    NULL
-  );
-
-  Serial.println("Display and RTC initialized!");
-
-  loadSecuritySettings();
-  loadLockSettings();
+  loadSettings();
 
   lastActivityTime = millis();
 }
 
 void loop() {
-  bool activityDetected = false;
+  readButtons();
 
+  bool activityDetected = false;
   for (int i = 0; i < 5; i++) {
     buttonJustPressed[i] = buttonStates[i] && !lastButtonStates[i];
     lastButtonStates[i] = buttonStates[i];
     if (buttonStates[i]) activityDetected = true;
-  }
-
-  // Temporary diagnostic: a button pin stuck LOW (e.g. leakage from flux
-  // residue) reads as "held down" forever, which keeps activityDetected
-  // true every loop and resets the idle timer before it can ever elapse —
-  // that's indistinguishable from "never sleeps" at the UI level, since a
-  // level-stuck pin doesn't retrigger buttonJustPressed (no repeated nav).
-  {
-    static unsigned long lastStuckCheck = 0;
-    if (activityDetected && millis() - lastStuckCheck > 2000) {
-      lastStuckCheck = millis();
-      const char* names[5] = {"UP", "DOWN", "LEFT", "RIGHT", "CENTER"};
-      Serial.print("[btn] held: ");
-      for (int i = 0; i < 5; i++) {
-        if (buttonStates[i]) { Serial.print(names[i]); Serial.print(" "); }
-      }
-      Serial.println();
-    }
   }
 
   if (activityDetected) {
@@ -295,8 +305,7 @@ void loop() {
       // brief display timeout shouldn't yank you out of the app you're using.
       // Terminal is the one exception even with a PIN set: it only reads
       // Serial while it's the active screen, so bouncing it to the watchface
-      // on every wake silently ate every command sent while blanked — the
-      // watch simply never saw them.
+      // on every wake silently ate every command sent while blanked.
       if (pinSet && currentScreen != SCREEN_TERMINAL) currentScreen = SCREEN_WATCHFACE;
 
       for (int i = 0; i < 5; i++) buttonJustPressed[i] = false;
@@ -305,44 +314,20 @@ void loop() {
 
   // The Terminal app reads Serial only while it's the active screen, so give
   // it a chance to see an incoming command (and wake the display for it)
-  // before the sleep/blank decision below runs this same frame.
+  // before the blank decision below runs this same frame.
   if (currentScreen == SCREEN_TERMINAL) {
     processTerminalSerial();
   }
 
-  bool timerActive = (tmMode == TM_RUNNING);
-  // With CDCOnBoot=cdc, `Serial` is HWCDC and `(bool)Serial` actually
-  // reflects the USB CDC connection state — no longer the DTR proxy it
-  // was under the older HardwareSerial config. strawberry-terminal now
-  // holds DTR true after opening, so this reads true while a session
-  // is live and false when it isn't.
-  bool usbConnected = (bool)Serial;
-
-  // Idle power-saving runs on every screen the user might be sitting on
-  // (watchface, menu, any app). The single exception is animations —
-  // blanking mid-slide would strand the transition halfway. This gives
-  // the Lock Screen timeout its intended global effect.
+  // Idle blanking runs on every screen the user might be sitting on. The single
+  // exception is animations — blanking mid-slide would strand the transition
+  // halfway. This gives the Lock Screen timeout its intended global effect.
   bool allowBlank = !isAnimating;
-
-  // Full light sleep halts the CPU outright, so it must never engage while
-  // something needs the CPU running in the background: a counting-down
-  // timer (it wouldn't fire on time), or the Terminal app while a USB host
-  // is actually attached (serial commands need the CPU awake to be read).
-  // Terminal without a host on the other end sleeps normally — no reason
-  // to burn power waiting for something that isn't there.
-  bool allowLightSleep = allowBlank && !timerActive && !(currentScreen == SCREEN_TERMINAL && usbConnected);
 
   if (displayOn && allowBlank) {
     if (millis() - lastActivityTime > DISPLAY_TIMEOUT_MS) {
       display.ssd1306_command(SSD1306_DISPLAYOFF);
       displayOn = false;
-      displayOffAt = millis();
-    }
-  }
-
-  if (!displayOn && allowLightSleep) {
-    if (millis() - displayOffAt > DEEP_SLEEP_DELAY_MS) {
-      goToDeepSleep();
     }
   }
 
@@ -353,9 +338,7 @@ void loop() {
   }
 
   // The timer countdown must keep ticking even while the display is blanked
-  // (e.g. you started it and walked back to the watchface) — it used to live
-  // inside the `if (displayOn)` block below and silently paused whenever the
-  // screen went dark, so the alert could fire late or never wake the display.
+  // (e.g. you started it and walked back to the watchface).
   if (tmMode == TM_RUNNING) {
     unsigned long now = millis();
     unsigned long delta = now - tmLastTick;
@@ -507,7 +490,6 @@ void loop() {
             tmMode = TM_READY;
             tmFocus = 3;
             tmLongPressTriggered = true;
-
           }
         } else {
           tmSetPressStart = 0;
@@ -653,10 +635,8 @@ void loop() {
         if (buttonJustPressed[4]) {
           const char* key = sciGrid[calcSciRow][calcSciCol];
 
-          // BACK just goes back; every other key applies a function first. This
-          // used to "return" out of loop() entirely, skipping the frame render.
+          // BACK just goes back; every other key applies a function first.
           if (strcmp(key, "BACK") != 0) {
-            // Apply SCI function to active input
             String* activeInput = calcIsOpSet ? &calcInput2 : &calcInput1;
             float v = activeInput->toFloat();
             bool hasVal = (activeInput->length() > 0 && !calcError);
@@ -685,7 +665,6 @@ void loop() {
               // Trim trailing zeros
               while (result.endsWith("0") && result.indexOf(".") != -1) result.remove(result.length()-1);
               if (result.endsWith(".")) result.remove(result.length()-1);
-              // If pi was inserted into empty, set as calcInput1 directly
               if (strcmp(key, "pi") == 0) {
                 if (!calcIsOpSet) calcInput1 = result;
                 else calcInput2 = result;
@@ -699,7 +678,6 @@ void loop() {
       }
 
       else if (currentScreen == SCREEN_PIN_ENTRY) {
-        // Uniform 4x3 grid, matching cyberdeck.ino's numpad exactly.
         if (buttonJustPressed[0]) pinCursorRow = (pinCursorRow > 0) ? pinCursorRow - 1 : 3;
         if (buttonJustPressed[1]) pinCursorRow = (pinCursorRow < 3) ? pinCursorRow + 1 : 0;
         if (buttonJustPressed[2]) pinCursorCol = (pinCursorCol > 0) ? pinCursorCol - 1 : 2;
@@ -737,11 +715,9 @@ void loop() {
           if (secMenuCursor == -1) {
             startAnimation(SCREEN_MENU, 64);
           } else if (secMenuCursor == 0) {
-            // Change PIN — verify current first
             pendingAction = ACT_CHANGE;
             enterPinScreen(SEC_VERIFY, SCREEN_SECURITY_MENU);
           } else if (secMenuCursor == 1) {
-            // Turn Off — verify current first
             pendingAction = ACT_DISABLE;
             enterPinScreen(SEC_VERIFY, SCREEN_SECURITY_MENU);
           }
@@ -768,7 +744,7 @@ void loop() {
             if (yes) {
               pinSet = false;
               pinStored = "";
-              savePinSettings();
+              saveSettings();
               confirmType = CONF_NONE;
               pendingAction = ACT_NONE;
               startAnimation(SCREEN_MENU, 64);
@@ -794,7 +770,7 @@ void loop() {
             if (chosen != displayTimeoutSec) {
               displayTimeoutSec = chosen;
               DISPLAY_TIMEOUT_MS = (unsigned long)displayTimeoutSec * 1000UL;
-              saveLockSettings();
+              saveSettings();
             }
           }
         }
@@ -828,6 +804,87 @@ void loop() {
 
   delay(5);
 }
+
+/* ---------------- Platform layer: buttons, time, settings ---------------- */
+
+void setupButtons() {
+  // D1-D5 all have internal pull-ups, unlike D0 — no external resistors needed.
+  for (int i = 0; i < 5; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
+  }
+}
+
+void readButtons() {
+  // 50ms poll, matching the cadence of the old FreeRTOS reader task — also
+  // acts as the debounce, since a bounce settles well inside one interval.
+  static unsigned long lastPoll = 0;
+  if (millis() - lastPoll < 50) return;
+  lastPoll = millis();
+
+  buttonStates[0] = !digitalRead(BTN_UP);
+  buttonStates[1] = !digitalRead(BTN_DOWN);
+  buttonStates[2] = !digitalRead(BTN_LEFT);
+  buttonStates[3] = !digitalRead(BTN_RIGHT);
+  buttonStates[4] = !digitalRead(BTN_CENTER);
+}
+
+DateTime nowTime() {
+  if (rtcPresent) return rtc.now();
+  // Software clock: base time plus however long we've been running. Unsigned
+  // subtraction keeps this correct across the ~49-day millis() rollover.
+  unsigned long elapsed = (millis() - softBaseMillis) / 1000UL;
+  return softBase + TimeSpan((int32_t)elapsed);
+}
+
+void setDeviceTime(const DateTime &dt) {
+  if (rtcPresent) rtc.adjust(dt);
+  // Always re-base the software clock too, so `set_time` works identically
+  // whether or not a DS3231 happens to be attached.
+  softBase = dt;
+  softBaseMillis = millis();
+}
+
+void loadSettings() {
+  StoredSettings s;
+  EEPROM.get(0, s);
+
+  if (s.magic != SETTINGS_MAGIC) {
+    // Blank/never-written EEPROM — fall back to defaults.
+    pinSet = false;
+    pinStored = "";
+    displayTimeoutSec = 5;
+  } else {
+    pinSet = (s.pinSet != 0);
+    s.pin[4] = '\0';
+    pinStored = String(s.pin);
+    displayTimeoutSec = s.timeoutSec;
+
+    // Guard against a corrupt value putting the timeout somewhere the Lock
+    // Screen menu can't represent (which would leave the cursor unselectable).
+    bool valid = false;
+    for (int i = 0; i < 4; i++) if (lockTimeoutOptions[i] == displayTimeoutSec) valid = true;
+    if (!valid) displayTimeoutSec = 5;
+
+    if (pinStored.length() != 4) { pinSet = false; pinStored = ""; }
+  }
+
+  DISPLAY_TIMEOUT_MS = (unsigned long)displayTimeoutSec * 1000UL;
+}
+
+void saveSettings() {
+  StoredSettings s;
+  s.magic = SETTINGS_MAGIC;
+  s.pinSet = pinSet ? 1 : 0;
+  memset(s.pin, 0, sizeof(s.pin));
+  pinStored.toCharArray(s.pin, sizeof(s.pin));
+  s.timeoutSec = (uint8_t)displayTimeoutSec;
+
+  EEPROM.put(0, s);
+  EEPROM.commit();
+}
+
+/* ---------------------------- UI / rendering ---------------------------- */
+
 void startAnimation(ScreenState next, int targetOffset) {
   isAnimating = true;
   animNextScreen = next;
@@ -904,7 +961,7 @@ void drawWatchFace(int yOffset) {
 
   drawHeader(yOffset);
 
-  DateTime now = rtc.now();
+  DateTime now = nowTime();
   uint16_t hour = now.hour();
   bool isPM = hour >= 12;
   if (hour > 12) hour -= 12;
@@ -1082,22 +1139,6 @@ void drawTimerAlert(int yOffset) {
   display.setTextColor(SSD1306_WHITE);
 }
 
-void buttonReadTask(void *pvParameters) {
-  TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(50);
-
-  while (1) {
-
-    buttonStates[0] = !digitalRead(BTN_UP);
-    buttonStates[1] = !digitalRead(BTN_DOWN);
-    buttonStates[2] = !digitalRead(BTN_LEFT);
-    buttonStates[3] = !digitalRead(BTN_RIGHT);
-    buttonStates[4] = !digitalRead(BTN_CENTER);
-
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
-  }
-}
-
 void drawCalculator(int yOffset) {
   // Build display string
   String disp;
@@ -1114,7 +1155,6 @@ void drawCalculator(int yOffset) {
   if ((int)disp.length() > 18) disp = disp.substring(disp.length() - 18);
 
   // --- Display bar: y=0..12 (13px tall) ---
-  // Right-align the expression text. Each char = 6px at textSize 1.
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   int dispX = 128 - (int)disp.length() * 6 - 1;
@@ -1126,7 +1166,6 @@ void drawCalculator(int yOffset) {
   display.drawFastHLine(0, 13 + yOffset, 128, SSD1306_WHITE);
 
   // --- Button grid: y=14..63 = 50px for 5 rows ---
-  // CELL_W=32px (4 cols * 32 = 128), CELL_H=10px (5 rows * 10 = 50, fits in 50)
   const int GY   = 14 + yOffset;
   const int CW   = 32;
   const int CH   = 10;
@@ -1148,10 +1187,9 @@ void drawCalculator(int yOffset) {
         // Emphasize operator column (col 3) with an extra pixel width
         if (c == 3) display.drawFastVLine(cx + 1, cy, CH, SSD1306_WHITE);
       }
-      // Center text: 6px per char at size 1
       int tw = strlen(lbl) * 6;
       int tx = cx + (CW - tw) / 2;
-      int ty = cy + (CH - 7) / 2; // proper center padding (10px cell, 7px char = 1.5px top pad)
+      int ty = cy + (CH - 7) / 2;
       display.setCursor(tx, ty);
       display.print(lbl);
     }
@@ -1168,21 +1206,17 @@ void drawCalculatorSci(int yOffset) {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
-  // Left: "SCI" label
   display.setCursor(1, 3 + yOffset);
   display.print("SCI");
 
-  // Right: active value right-aligned
   int valX = 128 - (int)activeVal.length() * 6 - 1;
   if (valX < 25) valX = 25;
   display.setCursor(valX, 3 + yOffset);
   display.print(activeVal);
 
-  // Separator
   display.drawFastHLine(0, 13 + yOffset, 128, SSD1306_WHITE);
 
   // --- SCI grid: 3 rows x 2 cols ---
-  // CELL_W=64px (2*64=128), CELL_H=16px (3*16=48, fits 14..63 = 50px)
   const int GY = 15 + yOffset;
   const int CW = 64;
   const int CH = 16;
@@ -1202,10 +1236,9 @@ void drawCalculatorSci(int yOffset) {
         display.drawRect(cx, cy, CW, CH, SSD1306_WHITE);
         display.setTextColor(SSD1306_WHITE);
       }
-      // Center label in cell
       int tw = strlen(lbl) * 6;
       int tx = cx + (CW - tw) / 2;
-      int ty = cy + (CH - 7) / 2; // 7px = char height at size 1
+      int ty = cy + (CH - 7) / 2;
       display.setCursor(tx, ty);
       display.print(lbl);
     }
@@ -1235,97 +1268,6 @@ void drawBoxedCenteredText(Adafruit_SSD1306 &d, const char* text, int x, int y, 
   d.setCursor(x + (w - tw) / 2, y + (h - th) / 2);
   d.print(text);
   d.setTextColor(SSD1306_WHITE);
-}
-
-void loadSecuritySettings() {
-  prefs.begin("security", true);
-  pinSet = prefs.getBool("pinSet", false);
-  pinStored = prefs.getString("pin", "");
-  prefs.end();
-}
-
-void savePinSettings() {
-  prefs.begin("security", false);
-  prefs.putBool("pinSet", pinSet);
-  prefs.putString("pin", pinStored);
-  prefs.end();
-}
-
-void loadLockSettings() {
-  prefs.begin("lockscreen", true);
-  displayTimeoutSec = prefs.getInt("timeoutSec", 5);
-  prefs.end();
-  DISPLAY_TIMEOUT_MS = (unsigned long)displayTimeoutSec * 1000UL;
-}
-
-void saveLockSettings() {
-  prefs.begin("lockscreen", false);
-  prefs.putInt("timeoutSec", displayTimeoutSec);
-  prefs.end();
-}
-
-// Force every button pad back to plain digital GPIO with a pull-up, undoing
-// anything that may have claimed it. Order matters: kill the 32k oscillator
-// first (that's what steals GPIO0/GPIO1 as XTAL_32K_P/N and disconnects their
-// digital input + pull-up), release any pad hold, then reset the IO_MUX back
-// to the GPIO function, and only then set the direction/pull-up. This board
-// has no 32.768kHz crystal — timekeeping comes from the DS3231 over I2C — so
-// that oscillator is never legitimately wanted here.
-void reclaimButtonPins() {
-  rtc_clk_32k_enable(false);
-  gpio_deep_sleep_hold_dis();
-
-  for (int i = 0; i < 5; i++) {
-    gpio_hold_dis((gpio_num_t)buttonPins[i]);
-    gpio_reset_pin((gpio_num_t)buttonPins[i]);
-  }
-
-  for (int i = 0; i < 5; i++) {
-    pinMode(buttonPins[i], INPUT_PULLUP);
-  }
-}
-
-void goToDeepSleep() {
-  // ESP32-C3 has no GPIO-based *deep*-sleep wakeup at all (ext0/ext1 are
-  // ESP32/S2-only; multi-pin GPIO deep-sleep wakeup is C6/H2-only). Light
-  // sleep is the only mode on this chip where any digital pin can wake it,
-  // so that's what actually runs here — still halts the CPU and gates
-  // clocks for real power savings, and resumes in-place (no reboot).
-  Serial.println("Entering light sleep (wake: any button)...");
-  Serial.flush();
-
-  esp_sleep_enable_gpio_wakeup();
-  for (int i = 0; i < 5; i++) {
-    gpio_wakeup_enable((gpio_num_t)buttonPins[i], GPIO_INTR_LOW_LEVEL);
-  }
-
-  esp_light_sleep_start();
-
-  for (int i = 0; i < 5; i++) {
-    gpio_wakeup_disable((gpio_num_t)buttonPins[i]);
-  }
-
-  // Light sleep is where the pads are most likely to get re-hijacked, so
-  // fully reclaim them here too rather than just re-asserting pinMode.
-  reclaimButtonPins();
-
-  // Bare DISPLAYON isn't enough after light sleep. The I2C peripheral pauses
-  // with the CPU, and mid-transaction resumes leave the SSD1306's internal
-  // command parser out of sync with what the driver thinks — subsequent
-  // writes then land on the bus fine but the panel stays blank, which is
-  // exactly the "display hangs blank, buttons still work" symptom. Fix by
-  // resetting the I2C bus and re-running the display's init sequence, so the
-  // OLED state machine is guaranteed known-good before we touch the buffer.
-  Wire.begin(9, 10);
-  Wire.setClock(400000);
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-
-  displayOn = true;
-  currentScreen = SCREEN_WATCHFACE;
-  animOffsetY = 0;
-  isAnimating = false;
-  lastActivityTime = millis();
-  for (int i = 0; i < 5; i++) buttonJustPressed[i] = false;
 }
 
 void enterPinScreen(SecurityFlow flow, ScreenState returnTo) {
@@ -1378,7 +1320,7 @@ void handlePinSubmit() {
     if (pinBuffer == pinPendingNew) {
       pinStored = pinBuffer;
       pinSet = true;
-      savePinSettings();
+      saveSettings();
       pinBuffer = ""; pinPendingNew = "";
       securityFlow = SEC_NONE;
       SecPendingAction wasAction = pendingAction;
@@ -1426,8 +1368,7 @@ void drawPinEntry(int yOffset) {
     }
   }
 
-  // Numpad: uniform 4x3 grid, y=22..62. keyH=10 gives digit glyphs vertical
-  // padding; starts 3px below the digit boxes so nothing overlaps.
+  // Numpad: uniform 4x3 grid, y=22..62.
   const int padX = 34;
   const int padY = 22 + yOffset;
   const int keyW = 18, keyH = 10, colStep = 20, rowStep = 10;
@@ -1445,7 +1386,6 @@ void drawPinEntry(int yOffset) {
 }
 
 void drawSecurityMenu(int yOffset) {
-  // Back arrow (<--) top-left, "Security" title centered.
   display.setTextSize(1);
   bool backSel = (secMenuCursor == -1);
   if (backSel) {
@@ -1614,7 +1554,7 @@ void applyTerminalCommand(bool granted) {
     if (termPendingCmdName == "set_time") {
       int y, mo, d, h, mi, s;
       if (sscanf(termPendingArgs.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6) {
-        rtc.adjust(DateTime(y, mo, d, h, mi, s));
+        setDeviceTime(DateTime(y, mo, d, h, mi, s));
       }
     }
     Serial.print("ACK "); Serial.print(termPendingCmdName); Serial.println(" YES");
